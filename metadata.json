@@ -1,0 +1,6 @@
+{
+  "name": "KB SPASI COMMUNITY",
+  "description": "Modern cash management and financial reports application with spreadsheet, charts, automated periods, and admin lock.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
