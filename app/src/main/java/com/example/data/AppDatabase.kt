@@ -5,11 +5,7 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(
-    entities = [PeriodEntity::class, ContributionEntity::class, ExpenseEntity::class],
-    version = 1,
-    exportSchema = false
-)
+@Database(entities = [Period::class, Member::class, Transaction::class], version = 1, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun financeDao(): FinanceDao
 

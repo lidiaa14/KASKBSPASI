@@ -2,26 +2,53 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Light/Clean Trading theme colors
-val LightPrimary = Color(0xFF2563EB)
-val LightSecondary = Color(0xFF0891B2)
-val LightTertiary = Color(0xFF10B981)
-val LightBackground = Color(0xFFF4F6F9)
+// Light Theme colors
+val LightPrimary = Color(0xFF1F56C7)
+val LightOnPrimary = Color(0xFFFFFFFF)
+val LightPrimaryContainer = Color(0xFFE3EDFC)
+val LightOnPrimaryContainer = Color(0xFF00153B)
+val LightSecondary = Color(0xFF4A5C78)
+val LightOnSecondary = Color(0xFFFFFFFF)
+val LightSecondaryContainer = Color(0xFFD6E3F8)
+val LightOnSecondaryContainer = Color(0xFF051B38)
+val LightTertiary = Color(0xFF5E548E)
+val LightOnTertiary = Color(0xFFFFFFFF)
+val LightTertiaryContainer = Color(0xFFE8DEFF)
+val LightOnTertiaryContainer = Color(0xFF1B1143)
+val LightError = Color(0xFFBA1A1A)
+val LightOnError = Color(0xFFFFFFFF)
+val LightErrorContainer = Color(0xFFFFDAD6)
+val LightOnErrorContainer = Color(0xFF410002)
+val LightBackground = Color(0xFFF4F6FB)
+val LightOnBackground = Color(0xFF191C20)
 val LightSurface = Color(0xFFFFFFFF)
-val LightOnBackground = Color(0xFF0F172A)
-val LightOnSurface = Color(0xFF0F172A)
-val LightOnSurfaceVariant = Color(0xFF475569)
-val LightOutline = Color(0xFFE2E8F0)
+val LightOnSurface = Color(0xFF191C20)
+val LightSurfaceVariant = Color(0xFFDFE2EB)
+val LightOnSurfaceVariant = Color(0xFF43474F)
+val LightOutline = Color(0xFF737780)
 
-// Dark/CryptoWhale inspired deep cyber ocean theme colors
-val DarkPrimary = Color(0xFF1E6BFF)       // Electric vibrant blue buttons/accents
-val DarkSecondary = Color(0xFF00D8F6)     // Neon cyan-blue highlights
-val DarkTertiary = Color(0xFF10B981)      // Green success accents
-val DarkBackground = Color(0xFF070B16)    // Extraterrestrial space-deep background
-val DarkSurface = Color(0xFF0E1626)       // Beautiful navy card container
-val DarkSurfaceVariant = Color(0xFF1C273C) // Contrast card section headers
-val DarkOnBackground = Color(0xFFF1F5F9)  // Modern neutral silver text
-val DarkOnSurface = Color(0xFFFFFFFF)     // High-end crisp white typography
-val DarkOnSurfaceVariant = Color(0xFF94A3B8)// Responsive slate detail description
-val DarkOutline = Color(0xFF1E293B)       // Premium sharp thin borders
-val DarkError = Color(0xFFEF4444)
+// Dark Theme colors
+val DarkPrimary = Color(0xFFAEC6FF)
+val DarkOnPrimary = Color(0xFF002B76)
+val DarkPrimaryContainer = Color(0xFF003F9E)
+val DarkOnPrimaryContainer = Color(0xFFD8E2FF)
+val DarkSecondary = Color(0xFFB9C6DC)
+val DarkOnSecondary = Color(0xFF233042)
+val DarkSecondaryContainer = Color(0xFF39475A)
+val DarkOnSecondaryContainer = Color(0xFFD5E3FC)
+val DarkTertiary = Color(0xFFCBC0FF)
+val DarkOnTertiary = Color(0xFF30255C)
+val DarkTertiaryContainer = Color(0xFF473C74)
+val DarkOnTertiaryContainer = Color(0xFFE8DEFF)
+val DarkError = Color(0xFFFFB4AB)
+val DarkOnError = Color(0xFF690005)
+val DarkErrorContainer = Color(0xFF93000A)
+val DarkOnErrorContainer = Color(0xFFFFDAD6)
+val DarkBackground = Color(0xFF0F131C)
+val DarkOnBackground = Color(0xFFE1E2E8)
+val DarkSurface = Color(0xFF131823)
+val DarkOnSurface = Color(0xFFE1E2E8)
+val DarkSurfaceVariant = Color(0xFF43474F)
+val DarkOnSurfaceVariant = Color(0xFFC3C6CF)
+val DarkOutline = Color(0xFF8D9099)
+

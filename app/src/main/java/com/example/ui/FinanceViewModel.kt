@@ -3,183 +3,198 @@ package com.example.ui
 import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import org.json.JSONArray
-import org.json.JSONObject
+import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
+import com.google.firebase.firestore.FirebaseFirestore
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class FinanceViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val database = AppDatabase.getDatabase(application)
-    private val repository = FinanceRepository(database.financeDao())
-
-    // All available financial periods from the database
-    val allPeriods = repository.allPeriods.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = emptyList()
-    )
-
-    // The current active period set in database
-    val activePeriodDb = repository.activePeriodFlow.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = null
-    )
-
-    // Currently viewed/selected period in UI (can be toggled in filters)
-    val selectedPeriod = MutableStateFlow<PeriodEntity?>(null)
-
-    // Real-time search queries and filters
-    val searchQuery = MutableStateFlow("")
-    val statusFilter = MutableStateFlow("All") // "All", "Paid", "Unpaid"
-    val monthFilter = MutableStateFlow(-1) // -1 for All, 0-11 for Jan-Dec
-
-    // Admin authorization session parameters
-    val isAdminMode = MutableStateFlow(false)
-    val adminPassword = MutableStateFlow("") // Default admin123
-    val passwordInputError = MutableStateFlow(false)
-
-    // UI Dark mode preference (persisted easily in SharedPreferences)
+    private val repository: FinanceRepository
     private val sharedPrefs = application.getSharedPreferences("kb_spasi_prefs", Context.MODE_PRIVATE)
-    val isDarkMode = MutableStateFlow(sharedPrefs.getBoolean("dark_mode", true))
 
-    // UI Language preference (persisted easily in SharedPreferences), default: "id" (Indonesian)
+    // Dark mode state - IMPORTANT: defaults to false (Light Mode)!
+    val isDarkMode = MutableStateFlow(sharedPrefs.getBoolean("dark_mode", false))
+
+    // Language state - default is Indonesian ("id")
     val appLanguage = MutableStateFlow(sharedPrefs.getString("app_language", "id") ?: "id")
 
-    // JSON Backup import/export state
-    val backupRestoreStatus = MutableStateFlow<String?>(null)
+    // Admin mode authorization state
+    val isAdminMode = MutableStateFlow(false)
 
-    init {
-        // Retrieve custom admin password if set previously, default is "admin123"
-        adminPassword.value = sharedPrefs.getString("admin_password", "admin123") ?: "admin123"
+    // Dynamic Admin password via Firestore state (default: "1234")
+    val adminPasswordState = MutableStateFlow("1234")
 
-        viewModelScope.launch {
-            // Seed base initial data so the app has working examples right off the bat
-            repository.seedInitialDataIfNecessary()
-
-            // Observe the active database period. If a selectedPeriod hasn't been set, sync with active.
-            repository.activePeriodFlow.collect { active ->
-                if (selectedPeriod.value == null && active != null) {
-                    selectedPeriod.value = active
-                }
+    private val firestore: FirebaseFirestore by lazy {
+        val context = getApplication<Application>().applicationContext
+        try {
+            FirebaseFirestore.getInstance()
+        } catch (e: Exception) {
+            try {
+                val options = FirebaseOptions.Builder()
+                    .setProjectId("kb-spasi-finance")
+                    .setApplicationId("com.example")
+                    .setApiKey("AIzaSyA-mockApiKey1234567890abcdef")
+                    .build()
+                FirebaseApp.initializeApp(context, options)
+                FirebaseFirestore.getInstance()
+            } catch (ex: Exception) {
+                try {
+                    FirebaseApp.initializeApp(context)
+                } catch (any: Exception) {}
+                FirebaseFirestore.getInstance()
             }
         }
     }
 
-    // Reactively load contributions based on selected period
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val rawContributions = selectedPeriod.flatMapLatest { period ->
-        if (period != null) {
-            repository.getContributionsForPeriod(period.id)
-        } else {
-            flowOf(emptyList())
-        }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    // Dynamic Lists from Database
+    val periods: StateFlow<List<Period>>
+    val members: StateFlow<List<Member>>
+    val allTransactionsList: StateFlow<List<Transaction>>
+    
+    // Currently selected Period ID (null means "All Time")
+    val selectedPeriodId = MutableStateFlow<Long?>(null)
+    
+    // Transactions inside the selected Period
+    val currentTransactions: StateFlow<List<Transaction>>
 
-    // Reactively load expenses based on selected period
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val rawExpenses = selectedPeriod.flatMapLatest { period ->
-        if (period != null) {
-            repository.getExpensesForPeriod(period.id)
-        } else {
-            flowOf(emptyList())
-        }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    // Calculated metrics of the active/selected Period
+    val metrics: StateFlow<FinanceMetrics>
 
-    // Compose filtered, searchable lists of contributions
-    val filteredContributions = combine(
-        rawContributions,
-        searchQuery,
-        statusFilter,
-        monthFilter
-    ) { list, query, status, month ->
-        list.filter { item ->
-            val matchesSearch = item.memberName.contains(query, ignoreCase = true) || 
-                                item.notes.contains(query, ignoreCase = true)
+    // Search query
+    val searchQuery = MutableStateFlow("")
+
+    init {
+        val database = AppDatabase.getDatabase(application)
+        repository = FinanceRepository(database.financeDao())
+
+        periods = repository.allPeriods
+            .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+        members = repository.allMembers
+            .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+        allTransactionsList = repository.allTransactions
+            .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+        // Reactively pull transactions when the selected period changes
+        currentTransactions = selectedPeriodId
+            .flatMapLatest { periodId ->
+                if (periodId == null) {
+                    repository.allTransactions
+                } else {
+                    repository.getTransactionsByPeriod(periodId)
+                }
+            }
+            .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+        // Reactively calculate metrics when selected period OR transactions list changes
+        metrics = combine(selectedPeriodId, periods, currentTransactions) { periodId, periodList, transactions ->
+            val matchingPeriod = periodList.find { it.id == periodId }
+            val startBalance = matchingPeriod?.startingBalance ?: 0.0
             
-            val matchesStatus = when (status) {
-                "Paid" -> item.isPaid
-                "Unpaid" -> !item.isPaid
-                else -> true
+            var inc = 0.0
+            var exp = 0.0
+            transactions.forEach {
+                if (it.type == "INCOME") {
+                     inc += it.amount
+                } else {
+                     exp += it.amount
+                }
             }
+            
+            FinanceMetrics(
+                startingBalance = startBalance,
+                totalIncome = inc,
+                totalExpenses = exp,
+                currentBalance = startBalance + inc - exp
+            )
+        }.stateIn(viewModelScope, SharingStarted.Lazily, FinanceMetrics())
 
-            val matchesMonth = if (month == -1) {
-                true
+        // Autoload the active period on launch
+        viewModelScope.launch {
+            val active = repository.getActivePeriod()
+            if (active != null) {
+                selectedPeriodId.value = active.id
             } else {
-                val cal = java.util.Calendar.getInstance().apply { timeInMillis = item.date }
-                cal.get(java.util.Calendar.MONTH) == month
+                // Wait and select the first available if no active flag found
+                periods.firstOrNull()?.firstOrNull()?.let {
+                    selectedPeriodId.value = it.id
+                }
             }
-
-            matchesSearch && matchesStatus && matchesMonth
         }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // Compose filtered list of expenses
-    val filteredExpenses = combine(
-        rawExpenses,
-        searchQuery,
-        monthFilter
-    ) { list, query, month ->
-        list.filter { item ->
-            val matchesSearch = item.purpose.contains(query, ignoreCase = true) ||
-                                item.notes.contains(query, ignoreCase = true)
-
-            val matchesMonth = if (month == -1) {
-                true
-            } else {
-                val cal = java.util.Calendar.getInstance().apply { timeInMillis = item.date }
-                cal.get(java.util.Calendar.MONTH) == month
+        // Live snapshot listener to sync the password across all devices instantly
+        viewModelScope.launch {
+            try {
+                firestore.collection("settings").document("admin")
+                    .addSnapshotListener { snapshot, error ->
+                        if (snapshot != null && snapshot.exists()) {
+                            val dbPass = snapshot.getString("password")
+                            if (!dbPass.isNullOrEmpty()) {
+                                adminPasswordState.value = dbPass
+                            }
+                        }
+                    }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-
-            matchesSearch && matchesMonth
         }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    }
 
-    // Global dashboard metric numbers calculated automatically based on selected period state
-    val dashboardMetrics = combine(
-        selectedPeriod,
-        rawContributions,
-        rawExpenses
-    ) { period, contributionsList, expensesList ->
-        val startBalance = period?.startingBalance ?: 0.0
-        val paidTotal = contributionsList.filter { it.isPaid }.sumOf { it.amount }
-        val expensesTotal = expensesList.sumOf { it.amount }
-        val remaining = startBalance + paidTotal - expensesTotal
-
-        DashboardMetrics(
-            startingBalance = startBalance,
-            totalIncome = paidTotal,
-            totalExpenses = expensesTotal,
-            remainingBalance = remaining
-        )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), DashboardMetrics())
-
-
-    // --- OPERATIONS ---
-
+    // Theme toggles
     fun toggleDarkMode() {
         val nextVal = !isDarkMode.value
         isDarkMode.value = nextVal
         sharedPrefs.edit().putBoolean("dark_mode", nextVal).apply()
     }
 
-    fun setAppLanguage(lang: String) {
+    // Language Toggles
+    fun setLanguage(lang: String) {
         appLanguage.value = lang
         sharedPrefs.edit().putString("app_language", lang).apply()
     }
 
-    fun loginAdmin(password: String): Boolean {
-        if (password == adminPassword.value) {
+    // Admin authorisation
+    fun loginAdmin(pass: String): Boolean {
+        return if (pass == adminPasswordState.value) {
             isAdminMode.value = true
-            passwordInputError.value = false
-            return true
+            true
         } else {
-            passwordInputError.value = true
-            return false
+            false
+        }
+    }
+
+    fun changeAdminPassword(currentPass: String, newPass: String, onSuccess: () -> Unit, onFailure: (String) -> Unit) {
+        if (currentPass != adminPasswordState.value) {
+            onFailure("Sandi saat ini salah!")
+            return
+        }
+        if (newPass.length < 4) {
+            onFailure("Sandi baru minimal 4 karakter!")
+            return
+        }
+        viewModelScope.launch {
+            try {
+                firestore.collection("settings").document("admin")
+                    .set(mapOf("password" to newPass))
+                    .addOnSuccessListener {
+                        adminPasswordState.value = newPass
+                        onSuccess()
+                    }
+                    .addOnFailureListener { e ->
+                        onFailure(e.localizedMessage ?: "Gagal memperbarui sandi ke Firestore")
+                    }
+            } catch (e: Exception) {
+                onFailure(e.localizedMessage ?: "Terjadi kesalahan koneksi")
+            }
         }
     }
 
@@ -187,260 +202,118 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         isAdminMode.value = false
     }
 
-    fun changeAdminPassword(newPassword: String) {
-        if (newPassword.isNotBlank()) {
-            adminPassword.value = newPassword
-            sharedPrefs.edit().putString("admin_password", newPassword).apply()
+    // Period actions
+    fun addPeriod(name: String, startingBalance: Double) {
+        viewModelScope.launch {
+            val newPeriod = Period(name = name, startingBalance = startingBalance, isActive = true)
+            val insertedId = repository.insertPeriod(newPeriod)
+            // Make it the active and selected one
+            repository.selectActivePeriod(insertedId)
+            selectedPeriodId.value = insertedId
         }
     }
 
-    fun selectPeriod(period: PeriodEntity) {
-        selectedPeriod.value = period
-    }
-
-    // -- DATABASE WRITES (ONLY allowed when isAdminMode == true) ---
-
-    fun addPeriod(name: String, startingBalance: Double, setAsActive: Boolean) {
+    fun selectPeriod(periodId: Long?) {
         viewModelScope.launch {
-            val period = PeriodEntity(name = name, startingBalance = startingBalance, isActive = setAsActive)
-            val insertedId = repository.insertPeriod(period).toInt()
-            if (setAsActive) {
-                repository.setActivePeriod(insertedId)
-                // Also update local selected viewing period to this new active one
-                selectedPeriod.value = period.copy(id = insertedId, isActive = true)
+            selectedPeriodId.value = periodId
+            if (periodId != null) {
+                repository.selectActivePeriod(periodId)
             }
         }
     }
 
-    fun switchActivePeriod(periodId: Int) {
-        viewModelScope.launch {
-            repository.setActivePeriod(periodId)
-            allPeriods.value.find { it.id == periodId }?.let {
-                selectedPeriod.value = it.copy(isActive = true)
-            }
-        }
-    }
-
-    fun deletePeriod(period: PeriodEntity) {
+    fun deletePeriod(period: Period) {
         viewModelScope.launch {
             repository.deletePeriod(period)
-            // If we deleted our currently selected view, fallback to active db period or first database period
-            if (selectedPeriod.value?.id == period.id) {
-                val dbActive = repository.activePeriodFlow.first()
-                if (dbActive != null) {
-                    selectedPeriod.value = dbActive
-                } else {
-                    selectedPeriod.value = allPeriods.value.firstOrNull { it.id != period.id }
-                }
+            if (selectedPeriodId.value == period.id) {
+                selectedPeriodId.value = null
             }
         }
     }
 
-    fun addContribution(name: String, amount: Double, date: Long, isPaid: Boolean, notes: String) {
-        val pId = selectedPeriod.value?.id ?: return
+    // Member actions
+    fun addMember(name: String, notes: String) {
         viewModelScope.launch {
-            val contribution = ContributionEntity(
-                periodId = pId,
-                memberName = name,
-                amount = amount,
-                date = date,
-                isPaid = isPaid,
-                notes = notes
-            )
-            repository.insertContribution(contribution)
+            repository.insertMember(Member(name = name, notes = notes))
         }
     }
 
-    fun toggleContributionPaid(contribution: ContributionEntity) {
+    fun deleteMember(member: Member) {
         viewModelScope.launch {
-            val updated = contribution.copy(isPaid = !contribution.isPaid)
-            repository.updateContribution(updated)
+            repository.deleteMember(member)
         }
     }
 
-    fun updateContribution(contribution: ContributionEntity) {
+    // Transaction actions
+    fun addTransaction(type: String, category: String, amount: Double, description: String, memberId: Long?, memberName: String?) {
         viewModelScope.launch {
-            repository.updateContribution(contribution)
-        }
-    }
-
-    fun deleteContribution(contribution: ContributionEntity) {
-        viewModelScope.launch {
-            repository.deleteContribution(contribution)
-        }
-    }
-
-    fun deleteMemberAllContributions(memberName: String) {
-        val pId = selectedPeriod.value?.id ?: return
-        viewModelScope.launch {
-            val list = rawContributions.value.filter {
-                it.periodId == pId && it.memberName.trim().equals(memberName.trim(), ignoreCase = true)
-            }
-            list.forEach {
-                repository.deleteContribution(it)
-            }
-        }
-    }
-
-    fun addExpense(purpose: String, amount: Double, date: Long, notes: String) {
-        val pId = selectedPeriod.value?.id ?: return
-        viewModelScope.launch {
-            val expense = ExpenseEntity(
-                periodId = pId,
-                purpose = purpose,
-                amount = amount,
-                date = date,
-                notes = notes
-            )
-            repository.insertExpense(expense)
-        }
-    }
-
-    fun updateExpense(expense: ExpenseEntity) {
-        viewModelScope.launch {
-            repository.updateExpense(expense)
-        }
-    }
-
-    fun deleteExpense(expense: ExpenseEntity) {
-        viewModelScope.launch {
-            repository.deleteExpense(expense)
-        }
-    }
-
-    // --- ENHANCED OFFLINE JSON BACKUP & RESTORE SYSTEM ---
-    
-    fun exportBackupToJson(): String {
-        return try {
-            val root = JSONObject()
-            
-            // Note: Since Flow values are reactive, we take the current snapshot values
-            val periodsList = allPeriods.value
-            val contributionsList = rawContributions.value
-            val expensesList = rawExpenses.value
-
-            val periodsArray = JSONArray()
-            periodsList.forEach { p ->
-                val pObj = JSONObject()
-                pObj.put("id", p.id)
-                pObj.put("name", p.name)
-                pObj.put("startingBalance", p.startingBalance)
-                pObj.put("isActive", p.isActive)
-                periodsArray.put(pObj)
-            }
-            root.put("periods", periodsArray)
-
-            val contributionsArray = JSONArray()
-            contributionsList.forEach { c ->
-                val cObj = JSONObject()
-                cObj.put("id", c.id)
-                cObj.put("periodId", c.periodId)
-                cObj.put("memberName", c.memberName)
-                cObj.put("amount", c.amount)
-                cObj.put("date", c.date)
-                cObj.put("isPaid", c.isPaid)
-                cObj.put("notes", c.notes)
-                contributionsArray.put(cObj)
-            }
-            root.put("contributions", contributionsArray)
-
-            val expensesArray = JSONArray()
-            expensesList.forEach { e ->
-                val eObj = JSONObject()
-                eObj.put("id", e.id)
-                eObj.put("periodId", e.periodId)
-                eObj.put("date", e.date)
-                eObj.put("amount", e.amount)
-                eObj.put("purpose", e.purpose)
-                eObj.put("notes", e.notes)
-                expensesArray.put(eObj)
-            }
-            root.put("expenses", expensesArray)
-
-            root.toString(4) // Prettified backing
-        } catch (e: Exception) {
-            "Error exporting: ${e.localizedMessage}"
-        }
-    }
-
-    fun importBackupFromJson(jsonString: String): Boolean {
-        return try {
-            val root = JSONObject(jsonString)
-            
-            val periodsArray = root.optJSONArray("periods")
-            val contributionsArray = root.optJSONArray("contributions")
-            val expensesArray = root.optJSONArray("expenses")
-
-            if (periodsArray == null) {
-                backupRestoreStatus.value = "Failed: Invalid backup schema (missing periods)"
-                return false
-            }
-
-            viewModelScope.launch {
-                // To safely overwrite, we do local database insertion.
-                // 1. Process periods
-                for (i in 0 until periodsArray.length()) {
-                    val pObj = periodsArray.getJSONObject(i)
-                    val p = PeriodEntity(
-                        id = pObj.optInt("id", 0),
-                        name = pObj.getString("name"),
-                        startingBalance = pObj.optDouble("startingBalance", 0.0),
-                        isActive = pObj.optBoolean("isActive", false)
+            val currentPeriodId = selectedPeriodId.value
+            if (currentPeriodId != null) {
+                repository.insertTransaction(
+                    Transaction(
+                        periodId = currentPeriodId,
+                        type = type,
+                        category = category,
+                        amount = amount,
+                        description = description,
+                        memberId = memberId,
+                        memberName = memberName
                     )
-                    repository.insertPeriod(p)
-                }
-
-                // 2. Process contributions
-                if (contributionsArray != null) {
-                    for (i in 0 until contributionsArray.length()) {
-                        val cObj = contributionsArray.getJSONObject(i)
-                        val c = ContributionEntity(
-                            id = cObj.optInt("id", 0),
-                            periodId = cObj.getInt("periodId"),
-                            memberName = cObj.getString("memberName"),
-                            amount = cObj.getDouble("amount"),
-                            date = cObj.getLong("date"),
-                            isPaid = cObj.getBoolean("isPaid"),
-                            notes = cObj.optString("notes", "")
-                        )
-                        repository.insertContribution(c)
-                    }
-                }
-
-                // 3. Process expenses
-                if (expensesArray != null) {
-                    for (i in 0 until expensesArray.length()) {
-                        val eObj = expensesArray.getJSONObject(i)
-                        val e = ExpenseEntity(
-                            id = eObj.optInt("id", 0),
-                            periodId = eObj.getInt("periodId"),
-                            date = eObj.getLong("date"),
-                            amount = eObj.getDouble("amount"),
-                            purpose = eObj.getString("purpose"),
-                            notes = eObj.optString("notes", "")
-                        )
-                        repository.insertExpense(e)
-                    }
-                }
-
-                backupRestoreStatus.value = "Success: Restored backup database records!"
+                )
             }
-            true
-        } catch (e: Exception) {
-            backupRestoreStatus.value = "Restore Error: ${e.localizedMessage}"
-            false
         }
     }
 
-    fun clearBackupRestoreStatus() {
-        backupRestoreStatus.value = null
+    fun deleteTransaction(transaction: Transaction) {
+        viewModelScope.launch {
+            repository.deleteTransaction(transaction)
+        }
+    }
+
+    fun togglePeriodPayment(member: Member, period: Period) {
+        viewModelScope.launch {
+            val txs = allTransactionsList.value
+            val matching = txs.filter { it.memberId == member.id && it.periodId == period.id && it.type == "INCOME" }
+            if (matching.isNotEmpty()) {
+                matching.forEach { repository.deleteTransaction(it) }
+            } else {
+                repository.insertTransaction(
+                    Transaction(
+                        periodId = period.id,
+                        type = "INCOME",
+                        category = "Iuran Bulanan",
+                        amount = 50000.0,
+                        description = "Iuran ${member.name} - ${period.name}",
+                        memberId = member.id,
+                        memberName = member.name
+                    )
+                )
+            }
+        }
+    }
+
+    // Database Reset
+    fun clearAllData() {
+        viewModelScope.launch {
+            repository.clearAllData()
+            selectedPeriodId.value = null
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    class Factory(private val application: Application) : ViewModelProvider.Factory {
+        override fun <T : ViewModel> create(modelClass: Class<T>): T {
+            if (modelClass.isAssignableFrom(FinanceViewModel::class.java)) {
+                return FinanceViewModel(application) as T
+            }
+            throw IllegalArgumentException("Unknown ViewModel class")
+        }
     }
 }
 
-// Data holder representing current dynamic metrics of a cash ledger
-data class DashboardMetrics(
+data class FinanceMetrics(
     val startingBalance: Double = 0.0,
     val totalIncome: Double = 0.0,
     val totalExpenses: Double = 0.0,
-    val remainingBalance: Double = 0.0
+    val currentBalance: Double = 0.0
 )
