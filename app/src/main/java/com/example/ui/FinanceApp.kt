@@ -2,6 +2,7 @@ package com.example.ui
 
 import android.widget.Toast
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -11,6 +12,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.ui.res.painterResource
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -44,6 +46,14 @@ import com.example.data.Period
 import com.example.data.Transaction
 import com.example.util.ReportExporter
 import com.example.util.Translations
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.unit.Velocity
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -87,9 +97,19 @@ fun FinanceApp(viewModel: FinanceViewModel) {
                     .padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // Community Logo Icon in the Header
+                Image(
+                    painter = painterResource(id = com.example.R.drawable.img_app_logo),
+                    contentDescription = "KB SPASI Logo",
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+
                 // Left action: Header Title & Active Period
                 Column(
-                    modifier = Modifier.padding(start = 4.dp)
+                    modifier = Modifier.padding(start = 0.dp)
                 ) {
                     Text(
                         text = t("app_title"),
@@ -210,80 +230,87 @@ fun FinanceApp(viewModel: FinanceViewModel) {
             }
         }
     ) { paddingValues ->
+        val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            when (currentTab) {
-                "Dashboard" -> DashboardTab(
-                    viewModel = viewModel,
-                    metrics = metrics,
-                    transactions = transactions,
-                    onAddTransaction = {
-                        if (isAdminMode) {
-                            if (selectedPeriodId != null) {
-                                showAddTransactionDialog = true
+            PullToRefreshContainer(
+                isRefreshing = isRefreshing,
+                onRefresh = { viewModel.refreshData() }
+            ) {
+                when (currentTab) {
+                    "Dashboard" -> DashboardTab(
+                        viewModel = viewModel,
+                        metrics = metrics,
+                        transactions = transactions,
+                        onAddTransaction = {
+                            if (isAdminMode) {
+                                if (selectedPeriodId != null) {
+                                    showAddTransactionDialog = true
+                                } else {
+                                    Toast.makeText(context, t("no_active_period"), Toast.LENGTH_LONG).show()
+                                }
                             } else {
-                                Toast.makeText(context, t("no_active_period"), Toast.LENGTH_LONG).show()
+                                Toast.makeText(context, t("admin_mode_locked"), Toast.LENGTH_LONG).show()
                             }
-                        } else {
-                            Toast.makeText(context, t("admin_mode_locked"), Toast.LENGTH_LONG).show()
+                        },
+                        onShareText = {
+                            showExportDialog = true
                         }
-                    },
-                    onShareText = {
-                        showExportDialog = true
-                    }
-                )
-                "Spreadsheet" -> SpreadsheetTab(
-                    viewModel = viewModel,
-                    periods = periods,
-                    selectedPeriodId = selectedPeriodId,
-                    transactions = transactions,
-                    isAdminMode = isAdminMode,
-                    searchQuery = searchQuery,
-                    onSearchChange = { viewModel.searchQuery.value = it },
-                    onPeriodSelect = { viewModel.selectPeriod(it) },
-                    onAddPeriodTrigger = {
-                        if (isAdminMode) showAddPeriodDialog = true
-                        else Toast.makeText(context, t("admin_mode_locked"), Toast.LENGTH_LONG).show()
-                    },
-                    onDeletePeriodTrigger = { viewModel.deletePeriod(it) },
-                    onAddTransactionTrigger = {
-                        if (isAdminMode) {
-                            if (selectedPeriodId != null) showAddTransactionDialog = true
-                            else Toast.makeText(context, t("no_active_period"), Toast.LENGTH_LONG).show()
-                        } else {
-                            Toast.makeText(context, t("admin_mode_locked"), Toast.LENGTH_LONG).show()
-                        }
-                    },
-                    onDeleteTransactionTrigger = { viewModel.deleteTransaction(it) }
-                )
-                "Members" -> MembersTab(
-                    viewModel = viewModel,
-                    members = members,
-                    transactions = transactions,
-                    isAdminMode = isAdminMode,
-                    onAddMember = {
-                        if (isAdminMode) showAddMemberDialog = true
-                        else Toast.makeText(context, t("admin_mode_locked"), Toast.LENGTH_LONG).show()
-                    },
-                    onDeleteMember = { viewModel.deleteMember(it) }
-                )
-                "Expenses" -> ExpensesTab(
-                    viewModel = viewModel,
-                    transactions = transactions,
-                    isAdminMode = isAdminMode,
-                    onDeleteTransaction = { viewModel.deleteTransaction(it) }
-                )
-                "Settings" -> SettingsTab(
-                    viewModel = viewModel,
-                    periods = periods,
-                    membersCount = members.size,
-                    currentLanguage = currentLanguage,
-                    isAdminMode = isAdminMode,
-                    onResetData = { viewModel.clearAllData() }
-                )
+                    )
+                    "Spreadsheet" -> SpreadsheetTab(
+                        viewModel = viewModel,
+                        periods = periods,
+                        selectedPeriodId = selectedPeriodId,
+                        transactions = transactions,
+                        isAdminMode = isAdminMode,
+                        searchQuery = searchQuery,
+                        onSearchChange = { viewModel.searchQuery.value = it },
+                        onPeriodSelect = { viewModel.selectPeriod(it) },
+                        onAddPeriodTrigger = {
+                            if (isAdminMode) showAddPeriodDialog = true
+                            else Toast.makeText(context, t("admin_mode_locked"), Toast.LENGTH_LONG).show()
+                        },
+                        onDeletePeriodTrigger = { viewModel.deletePeriod(it) },
+                        onAddTransactionTrigger = {
+                            if (isAdminMode) {
+                                if (selectedPeriodId != null) showAddTransactionDialog = true
+                                else Toast.makeText(context, t("no_active_period"), Toast.LENGTH_LONG).show()
+                            } else {
+                                Toast.makeText(context, t("admin_mode_locked"), Toast.LENGTH_LONG).show()
+                            }
+                        },
+                        onDeleteTransactionTrigger = { viewModel.deleteTransaction(it) }
+                    )
+                    "Members" -> MembersTab(
+                        viewModel = viewModel,
+                        members = members,
+                        transactions = transactions,
+                        isAdminMode = isAdminMode,
+                        onAddMember = {
+                            if (isAdminMode) showAddMemberDialog = true
+                            else Toast.makeText(context, t("admin_mode_locked"), Toast.LENGTH_LONG).show()
+                        },
+                        onDeleteMember = { viewModel.deleteMember(it) }
+                    )
+                    "Expenses" -> ExpensesTab(
+                        viewModel = viewModel,
+                        transactions = transactions,
+                        isAdminMode = isAdminMode,
+                        onDeleteTransaction = { viewModel.deleteTransaction(it) }
+                    )
+                    "Settings" -> SettingsTab(
+                        viewModel = viewModel,
+                        periods = periods,
+                        membersCount = members.size,
+                        currentLanguage = currentLanguage,
+                        isAdminMode = isAdminMode,
+                        onResetData = { viewModel.clearAllData() }
+                    )
+                }
             }
         }
     }
@@ -1331,7 +1358,7 @@ fun MembersTab(
         val paidTransactions = memberAllPaid
         val totalPaid = paidTransactions.sumOf { it.amount }
         
-        val monthlyRate = 50000.0 // Custom base iuran
+        val monthlyRate = 10000.0 // Custom base iuran
         val remainingUnpaid = unpaidPeriods.size * monthlyRate
 
         Dialog(onDismissRequest = {
@@ -2084,5 +2111,116 @@ fun SettingsTab(
                 }
             }
         )
+    }
+}
+
+@Composable
+fun PullToRefreshContainer(
+    isRefreshing: Boolean,
+    onRefresh: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    var pullOffsetY by remember { mutableStateOf(0f) }
+    val maxPullDistance = 350f 
+    
+    val nestedScrollConnection = remember(isRefreshing) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (isRefreshing) return Offset.Zero
+                if (available.y < 0 && pullOffsetY > 0f) {
+                    val nextOffset = (pullOffsetY + available.y).coerceAtLeast(0f)
+                    val consumed = pullOffsetY - nextOffset
+                    pullOffsetY = nextOffset
+                    return Offset(0f, -consumed)
+                }
+                return Offset.Zero
+            }
+
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource
+            ): Offset {
+                if (isRefreshing) return Offset.Zero
+                if (available.y > 0) {
+                    val added = available.y * 0.5f
+                    pullOffsetY = (pullOffsetY + added).coerceAtMost(maxPullDistance)
+                    return Offset(0f, available.y)
+                }
+                return Offset.Zero
+            }
+
+            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+                if (pullOffsetY >= 200f && !isRefreshing) {
+                    onRefresh()
+                }
+                pullOffsetY = 0f
+                return Velocity.Zero
+            }
+        }
+    }
+
+    val animatedOffset by animateFloatAsState(
+        targetValue = if (isRefreshing) 140f else pullOffsetY,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        label = "pull_offset"
+    )
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .nestedScroll(nestedScrollConnection)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .offset(y = (animatedOffset / 2.5f).dp)
+        ) {
+            content()
+        }
+
+        if (animatedOffset > 0f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .offset(y = (animatedOffset / 3f).dp - 10.dp)
+                    .align(Alignment.TopCenter),
+                contentAlignment = Alignment.Center
+            ) {
+                Card(
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    ),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isRefreshing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(24.dp),
+                                strokeWidth = 2.5.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        } else {
+                            val rotation = (animatedOffset / maxPullDistance) * 360f
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Pull to refresh",
+                                modifier = Modifier
+                                    .size(22.dp)
+                                    .graphicsLayer(rotationZ = rotation),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
