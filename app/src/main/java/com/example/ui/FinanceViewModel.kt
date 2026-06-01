@@ -13,6 +13,13 @@ import kotlinx.coroutines.launch
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class FinanceViewModel(application: Application) : AndroidViewModel(application) {
@@ -32,23 +39,30 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     // Dynamic Admin password via Firestore state (default: "1234")
     val adminPasswordState = MutableStateFlow("1234")
 
-    private val firestore: FirebaseFirestore by lazy {
+    private var listenerErrorRetryCount = 0
+
+    private val firestore: FirebaseFirestore? by lazy {
         val context = getApplication<Application>().applicationContext
         try {
-            val options = FirebaseOptions.Builder()
-                .setProjectId("uangkas-ef7cf")
-                .setApplicationId("1:1037396381254:android:3a6fe42cc78be098760447")
-                .setApiKey("AIzaSyA-mockApiKey1234567890abcdef")
-                .build()
-            try {
+            val app = if (FirebaseApp.getApps(context).isEmpty()) {
+                val options = FirebaseOptions.Builder()
+                    .setProjectId("uangkas-ef7cf")
+                    .setApplicationId("1:1037396381254:android:3a6fe42cc78be098760447")
+                    .setApiKey("AIzaSyBLzzewLA-WuzkcWDv7R0Yqz0AMIUjqqJg")
+                    .build()
                 FirebaseApp.initializeApp(context, options)
-            } catch (ex: Exception) {
-                // Already initialized or fallback
+            } else {
+                FirebaseApp.getInstance()
             }
-            FirebaseFirestore.getInstance()
+            FirebaseFirestore.getInstance(app)
         } catch (e: Exception) {
-            e.printStackTrace()
-            FirebaseFirestore.getInstance()
+            android.util.Log.e("FinanceViewModel", "Firebase initialization failed, utilizing default fallback", e)
+            try {
+                FirebaseFirestore.getInstance()
+            } catch (ex: Exception) {
+                android.util.Log.e("FinanceViewModel", "Firestore fallback also failed and is unavailable", ex)
+                null
+            }
         }
     }
 
@@ -74,88 +88,122 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     // Search query
     val searchQuery = MutableStateFlow("")
 
+    // Sync / Loading States
+    val isPeriodsLoading = MutableStateFlow(true)
+    val isMembersLoading = MutableStateFlow(true)
+    val isTransactionsLoading = MutableStateFlow(true)
+    var isSeeding = false
+
+    enum class ConnectionState {
+        CONNECTED,
+        SYNCING,
+        RECONNECTING,
+        OFFLINE
+    }
+
+    val connectionState = MutableStateFlow(ConnectionState.CONNECTED)
+    private val _networkConnected = MutableStateFlow(true)
+    val networkConnected: StateFlow<Boolean> = _networkConnected.asStateFlow()
+
+    private var periodsListener: ListenerRegistration? = null
+    private var membersListener: ListenerRegistration? = null
+    private var transactionsListener: ListenerRegistration? = null
+    private var passwordListener: ListenerRegistration? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var reconnectJob: Job? = null
+
+    val isDataLoading = combine(
+        combine(isPeriodsLoading, isMembersLoading, isTransactionsLoading) { p, m, t -> p || m || t },
+        networkConnected,
+        _periods,
+        _allTransactionsList
+    ) { anyLoading, isOnline, pList, tList ->
+        if (isOnline) {
+            anyLoading
+        } else {
+            if (pList.isNotEmpty() || tList.isNotEmpty()) {
+                false
+            } else {
+                anyLoading
+            }
+        }
+    }.stateIn(viewModelScope, SharingStarted.Lazily, true)
+
+    private fun safeDouble(value: Any?): Double {
+        return when (value) {
+            is Number -> value.toDouble()
+            is String -> value.toDoubleOrNull() ?: 0.0
+            else -> 0.0
+        }
+    }
+
+    private fun safeLong(value: Any?): Long? {
+        return when (value) {
+            is Number -> value.toLong()
+            is String -> value.toLongOrNull()
+            else -> null
+        }
+    }
+
+    private fun stableStringHashToLong(docId: String): Long {
+        docId.toLongOrNull()?.let { return it }
+        var hash = 1125899906842597L
+        for (char in docId) {
+            hash = 31L * hash + char.code
+        }
+        val absHash = java.lang.Math.abs(hash)
+        return if (absHash <= 0L) 1L else absHash
+    }
+
     init {
         val database = AppDatabase.getDatabase(application)
         repository = FinanceRepository(database.financeDao())
 
-        // Setup realtime firestore snapshot listeners to be the true cloud source of truth
-        try {
-            firestore.collection("periods")
-                .addSnapshotListener { snapshot, error ->
-                    if (snapshot != null) {
-                        val list = snapshot.documents.mapNotNull { doc ->
-                            try {
-                                val docIdLong = doc.id.toLongOrNull()
-                                val id = (doc.get("id") as? Number)?.toLong() ?: docIdLong ?: (1..100000).random().toLong()
-                                val name = doc.getString("name") ?: ""
-                                val startingBalance = (doc.get("startingBalance") as? Number)?.toDouble() ?: (doc.get("starting_balance") as? Number)?.toDouble() ?: 0.0
-                                val isActive = doc.getBoolean("isActive") ?: doc.getBoolean("is_active") ?: false
-                                Period(id = id, name = name, startingBalance = startingBalance, isActive = isActive)
-                            } catch (e: Exception) {
-                                e.printStackTrace()
-                                null
-                            }
-                        }.sortedByDescending { it.id }
+        // 1. Set up active and reactive collections from Room local database
+        viewModelScope.launch {
+            try {
+                repository.allPeriods.collect { list ->
+                    if (list.isNotEmpty()) {
                         _periods.value = list
+                        
+                        // Select active period immediately if list has active period
+                        if (selectedPeriodId.value == null) {
+                            val active = list.find { it.isActive }
+                            if (active != null) {
+                                selectedPeriodId.value = active.id
+                            } else {
+                                selectedPeriodId.value = list.firstOrNull()?.id
+                            }
+                        }
                     }
                 }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
 
-            firestore.collection("members")
-                .addSnapshotListener { snapshot, error ->
-                    if (snapshot != null) {
-                        val list = snapshot.documents.mapNotNull { doc ->
-                            try {
-                                val docIdLong = doc.id.toLongOrNull()
-                                val id = (doc.get("id") as? Number)?.toLong() ?: docIdLong ?: (1..100000).random().toLong()
-                                val name = doc.getString("name") ?: ""
-                                val notes = doc.getString("notes") ?: ""
-                                val isActive = doc.getBoolean("isActive") ?: doc.getBoolean("is_active") ?: true
-                                Member(id = id, name = name, notes = notes, isActive = isActive)
-                            } catch (e: Exception) {
-                                e.printStackTrace()
-                                null
-                            }
-                        }.sortedBy { it.name.lowercase() }
+        viewModelScope.launch {
+            try {
+                repository.allMembers.collect { list ->
+                    if (list.isNotEmpty()) {
                         _members.value = list
                     }
                 }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
 
-            firestore.collection("transactions")
-                .addSnapshotListener { snapshot, error ->
-                    if (snapshot != null) {
-                        val list = snapshot.documents.mapNotNull { doc ->
-                            try {
-                                val docIdLong = doc.id.toLongOrNull()
-                                val id = (doc.get("id") as? Number)?.toLong() ?: docIdLong ?: (1..1000000).random().toLong()
-                                val pId = (doc.get("periodId") as? Number)?.toLong() ?: (doc.get("period_id") as? Number)?.toLong() ?: 0L
-                                val type = doc.getString("type") ?: ""
-                                val category = doc.getString("category") ?: ""
-                                val amount = (doc.get("amount") as? Number)?.toDouble() ?: 0.0
-                                val description = doc.getString("description") ?: ""
-                                val date = (doc.get("date") as? Number)?.toLong() ?: System.currentTimeMillis()
-                                val mId = (doc.get("memberId") as? Number)?.toLong() ?: (doc.get("member_id") as? Number)?.toLong()
-                                val mName = doc.getString("memberName") ?: doc.getString("member_name")
-                                Transaction(
-                                    id = id,
-                                    periodId = pId,
-                                    type = type,
-                                    category = category,
-                                    amount = amount,
-                                    description = description,
-                                    date = date,
-                                    memberId = mId,
-                                    memberName = mName
-                                )
-                            } catch (e: Exception) {
-                                e.printStackTrace()
-                                null
-                            }
-                        }.sortedByDescending { it.date }
+        viewModelScope.launch {
+            try {
+                repository.allTransactions.collect { list ->
+                    if (list.isNotEmpty()) {
                         _allTransactionsList.value = list
                     }
                 }
-        } catch (e: Exception) {
-            e.printStackTrace()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
 
         // Reactively pull transactions when the selected period changes
@@ -190,7 +238,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
             )
         }.stateIn(viewModelScope, SharingStarted.Lazily, FinanceMetrics())
 
-        // Autoload the active period on launch
+        // Autoload the active period on launch if selectedPeriodId is still null
         viewModelScope.launch {
             periods.filter { it.isNotEmpty() }.firstOrNull()?.let { list ->
                 if (selectedPeriodId.value == null) {
@@ -198,32 +246,394 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     if (active != null) {
                         selectedPeriodId.value = active.id
                     } else {
-                        selectedPeriodId.value = list.first().id
+                        selectedPeriodId.value = list.firstOrNull()?.id
                     }
                 }
-            }
-        }
-
-        // Live snapshot listener to sync the password across all devices instantly
-        viewModelScope.launch {
-            try {
-                firestore.collection("settings").document("admin")
-                    .addSnapshotListener { snapshot, error ->
-                        if (snapshot != null && snapshot.exists()) {
-                            val dbPass = snapshot.getString("password")
-                            if (!dbPass.isNullOrEmpty()) {
-                                adminPasswordState.value = dbPass
-                            }
-                        }
-                    }
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
         }
 
         // Trigger spreadsheet seeder if it hasn't been run yet
         if (!sharedPrefs.getBoolean("spreadsheet_synced_2025_v2", false)) {
             seedSpreadsheetData()
+        }
+
+        // Setup connectivity monitor & register realtime cloud snapshot listeners as the true source of truth
+        monitorNetwork()
+        setupRealtimeListeners()
+    }
+
+    private fun monitorNetwork() {
+        val connectivityManager = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        if (connectivityManager != null) {
+            val builder = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            
+            // Set initial state
+            val activeNetwork = connectivityManager.activeNetwork
+            val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork)
+            val isInitialConnected = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+            
+            _networkConnected.value = isInitialConnected
+            connectionState.value = if (isInitialConnected) ConnectionState.SYNCING else ConnectionState.OFFLINE
+            
+            val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    viewModelScope.launch {
+                        val wasOffline = !_networkConnected.value
+                        _networkConnected.value = true
+                        if (wasOffline) {
+                            connectionState.value = ConnectionState.RECONNECTING
+                            delay(1000)
+                            setupRealtimeListeners()
+                        }
+                    }
+                }
+
+                override fun onLost(network: Network) {
+                    viewModelScope.launch {
+                        _networkConnected.value = false
+                        connectionState.value = ConnectionState.OFFLINE
+                    }
+                }
+            }
+            networkCallback = callback
+            try {
+                connectivityManager.registerNetworkCallback(builder.build(), callback)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    private fun handleListenerError(error: Exception?) {
+        error?.printStackTrace()
+        listenerErrorRetryCount++
+        android.util.Log.e("FinanceViewModel", "handleListenerError called. Retry count: $listenerErrorRetryCount", error)
+        
+        if (listenerErrorRetryCount > 3) {
+            android.util.Log.e("FinanceViewModel", "Firestore listeners failing/unauthorized repeatedly. Backing off to prevent crash loop.")
+            connectionState.value = ConnectionState.OFFLINE
+            isPeriodsLoading.value = false
+            isMembersLoading.value = false
+            isTransactionsLoading.value = false
+            return
+        }
+
+        if (_networkConnected.value) {
+            connectionState.value = ConnectionState.RECONNECTING
+            // Debounced reconnection attempt
+            reconnectJob?.cancel()
+            reconnectJob = viewModelScope.launch {
+                delay(10000)
+                if (_networkConnected.value) {
+                    setupRealtimeListeners()
+                }
+            }
+        } else {
+            connectionState.value = ConnectionState.OFFLINE
+        }
+    }
+
+    private fun clearRealtimeListeners() {
+        try {
+            periodsListener?.remove()
+            membersListener?.remove()
+            transactionsListener?.remove()
+            passwordListener?.remove()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        periodsListener = null
+        membersListener = null
+        transactionsListener = null
+        passwordListener = null
+    }
+
+    fun setupRealtimeListeners() {
+        clearRealtimeListeners()
+        
+        if (!_networkConnected.value) {
+            connectionState.value = ConnectionState.OFFLINE
+        } else {
+            connectionState.value = ConnectionState.SYNCING
+        }
+
+        val fs = firestore
+        if (fs == null) {
+            android.util.Log.w("FinanceViewModel", "Firestore is currently unavailable. Operating in persistent Room offline cache mode.")
+            isPeriodsLoading.value = false
+            isMembersLoading.value = false
+            isTransactionsLoading.value = false
+            connectionState.value = ConnectionState.OFFLINE
+            return
+        }
+
+        try {
+            android.util.Log.d("FinanceViewModel", "Setting up Firestore realtime listeners...")
+            periodsListener = fs.collection("payments")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        android.util.Log.e("FinanceViewModel", "Firestore payments listener error (connection failure/rules)", error)
+                        isPeriodsLoading.value = false
+                        checkSyncStatus()
+                        handleListenerError(error)
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        listenerErrorRetryCount = 0
+                        if (snapshot.isEmpty) {
+                            android.util.Log.d("FinanceViewModel", "Firestore payments: Snapshot received, but it is empty!")
+                        } else {
+                            android.util.Log.d("FinanceViewModel", "Firestore payments: Fetched successfully with ${snapshot.size()} documents")
+                        }
+                        val list = snapshot.documents.mapNotNull { doc ->
+                            try {
+                                val docIdLong = doc.id.toLongOrNull()
+                                val id = safeLong(doc.get("id")) ?: docIdLong ?: stableStringHashToLong(doc.id)
+                                val name = doc.getString("name") ?: ""
+                                val startingBalance = safeDouble(doc.get("startingBalance") ?: doc.get("starting_balance"))
+                                val isActive = when (val activeVal = doc.get("isActive") ?: doc.get("is_active")) {
+                                    is Boolean -> activeVal
+                                    is String -> activeVal.toBoolean()
+                                    is Number -> activeVal.toInt() != 0
+                                    else -> false
+                                }
+                                Period(id = id, name = name, startingBalance = startingBalance, isActive = isActive)
+                            } catch (e: Exception) {
+                                android.util.Log.e("FinanceViewModel", "Error parsing payment/period doc: ${doc.id}", e)
+                                null
+                            }
+                        }.sortedByDescending { it.id }
+
+                        if (list.isEmpty() && (isSeeding || connectionState.value == ConnectionState.OFFLINE || connectionState.value == ConnectionState.RECONNECTING)) {
+                            isPeriodsLoading.value = false
+                            checkSyncStatus()
+                            return@addSnapshotListener
+                        }
+                        
+                        if (list.isNotEmpty()) {
+                            _periods.value = list
+                        }
+                        checkSyncStatus()
+
+                        viewModelScope.launch {
+                            try {
+                                for (p in list) {
+                                    repository.insertPeriod(p)
+                                }
+                                val localPeriods = repository.allPeriods.firstOrNull() ?: emptyList()
+                                if (list.isNotEmpty()) {
+                                    for (localP in localPeriods) {
+                                        if (list.none { it.id == localP.id }) {
+                                            repository.deletePeriod(localP)
+                                        }
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                android.util.Log.e("FinanceViewModel", "Error syncing periods to Room cache", e)
+                            }
+                        }
+                    } else {
+                        android.util.Log.d("FinanceViewModel", "Firestore payments: Snapshot received was null")
+                    }
+                    isPeriodsLoading.value = false
+                }
+
+            membersListener = fs.collection("members")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        android.util.Log.e("FinanceViewModel", "Firestore members listener error (connection failure/rules)", error)
+                        isMembersLoading.value = false
+                        checkSyncStatus()
+                        handleListenerError(error)
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        listenerErrorRetryCount = 0
+                        if (snapshot.isEmpty) {
+                            android.util.Log.d("FinanceViewModel", "Firestore members: Snapshot received, but it is empty!")
+                        } else {
+                            android.util.Log.d("FinanceViewModel", "Firestore members: Fetched successfully with ${snapshot.size()} documents")
+                        }
+                        val list = snapshot.documents.mapNotNull { doc ->
+                            try {
+                                val docIdLong = doc.id.toLongOrNull()
+                                val id = safeLong(doc.get("id")) ?: docIdLong ?: stableStringHashToLong(doc.id)
+                                val name = doc.getString("name") ?: ""
+                                val notes = doc.getString("notes") ?: ""
+                                val isActive = when (val activeVal = doc.get("isActive") ?: doc.get("is_active")) {
+                                    is Boolean -> activeVal
+                                    is String -> activeVal.toBoolean()
+                                    is Number -> activeVal.toInt() != 0
+                                    else -> true
+                                }
+                                Member(id = id, name = name, notes = notes, isActive = isActive)
+                            } catch (e: Exception) {
+                                android.util.Log.e("FinanceViewModel", "Error parsing member doc: ${doc.id}", e)
+                                null
+                            }
+                        }.sortedBy { it.name.lowercase() }
+
+                        if (list.isEmpty() && (isSeeding || connectionState.value == ConnectionState.OFFLINE || connectionState.value == ConnectionState.RECONNECTING)) {
+                            isMembersLoading.value = false
+                            checkSyncStatus()
+                            return@addSnapshotListener
+                        }
+
+                        if (list.isNotEmpty()) {
+                            _members.value = list
+                        }
+                        checkSyncStatus()
+
+                        viewModelScope.launch {
+                            try {
+                                for (m in list) {
+                                    repository.insertMember(m)
+                                }
+                                val localMembers = repository.allMembers.firstOrNull() ?: emptyList()
+                                if (list.isNotEmpty()) {
+                                    for (localM in localMembers) {
+                                        if (list.none { it.id == localM.id }) {
+                                            repository.deleteMember(localM)
+                                        }
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                android.util.Log.e("FinanceViewModel", "Error syncing members to Room cache", e)
+                            }
+                        }
+                    } else {
+                        android.util.Log.d("FinanceViewModel", "Firestore members: Snapshot received was null")
+                    }
+                    isMembersLoading.value = false
+                }
+
+            transactionsListener = fs.collection("transactions")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        android.util.Log.e("FinanceViewModel", "Firestore transactions listener error (connection failure/rules)", error)
+                        isTransactionsLoading.value = false
+                        checkSyncStatus()
+                        handleListenerError(error)
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        listenerErrorRetryCount = 0
+                        if (snapshot.isEmpty) {
+                            android.util.Log.d("FinanceViewModel", "Firestore transactions: Snapshot received, but it is empty!")
+                        } else {
+                            android.util.Log.d("FinanceViewModel", "Firestore transactions: Fetched successfully with ${snapshot.size()} documents")
+                        }
+                        val list = snapshot.documents.mapNotNull { doc ->
+                            try {
+                                val docIdLong = doc.id.toLongOrNull()
+                                val id = safeLong(doc.get("id")) ?: docIdLong ?: stableStringHashToLong(doc.id)
+                                val pId = safeLong(doc.get("periodId") ?: doc.get("period_id")) ?: 0L
+                                val type = doc.getString("type") ?: ""
+                                val category = doc.getString("category") ?: ""
+                                val amount = safeDouble(doc.get("amount"))
+                                val description = doc.getString("description") ?: ""
+                                val date = safeLong(doc.get("date")) ?: System.currentTimeMillis()
+                                val mId = safeLong(doc.get("memberId") ?: doc.get("member_id"))
+                                val mName = doc.getString("memberName") ?: doc.getString("member_name")
+                                Transaction(
+                                    id = id,
+                                    periodId = pId,
+                                    type = type,
+                                    category = category,
+                                    amount = amount,
+                                    description = description,
+                                    date = date,
+                                    memberId = mId,
+                                    memberName = mName
+                                )
+                            } catch (e: Exception) {
+                                android.util.Log.e("FinanceViewModel", "Error parsing transaction doc: ${doc.id}", e)
+                                null
+                            }
+                        }.sortedByDescending { it.date }
+
+                        if (list.isEmpty() && (isSeeding || connectionState.value == ConnectionState.OFFLINE || connectionState.value == ConnectionState.RECONNECTING)) {
+                            isTransactionsLoading.value = false
+                            checkSyncStatus()
+                            return@addSnapshotListener
+                        }
+
+                        if (list.isNotEmpty()) {
+                            _allTransactionsList.value = list
+                        }
+                        checkSyncStatus()
+
+                        viewModelScope.launch {
+                            try {
+                                for (t in list) {
+                                    repository.insertTransaction(t)
+                                }
+                                val localTxs = repository.allTransactions.firstOrNull() ?: emptyList()
+                                if (list.isNotEmpty()) {
+                                    for (localT in localTxs) {
+                                        if (list.none { it.id == localT.id }) {
+                                            repository.deleteTransaction(localT)
+                                        }
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                android.util.Log.e("FinanceViewModel", "Error syncing transactions to Room cache", e)
+                            }
+                        }
+                    } else {
+                        android.util.Log.d("FinanceViewModel", "Firestore transactions: Snapshot received was null")
+                    }
+                    isTransactionsLoading.value = false
+                }
+
+            passwordListener = fs.collection("settings").document("admin")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        android.util.Log.e("FinanceViewModel", "Firestore settings/admin error", error)
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null && snapshot.exists()) {
+                        android.util.Log.d("FinanceViewModel", "Firestore settings/admin fetched successfully")
+                        val dbPass = snapshot.getString("password")
+                        if (!dbPass.isNullOrEmpty()) {
+                            adminPasswordState.value = dbPass
+                        }
+                    } else {
+                        android.util.Log.d("FinanceViewModel", "Firestore settings/admin: Document doesn't exist or is null")
+                    }
+                }
+        } catch (e: Exception) {
+            android.util.Log.e("FinanceViewModel", "Error while setting up realtime listeners", e)
+            handleListenerError(e)
+            isPeriodsLoading.value = false
+            isMembersLoading.value = false
+            isTransactionsLoading.value = false
+        }
+    }
+
+    private fun checkSyncStatus() {
+        if (!isPeriodsLoading.value && !isMembersLoading.value && !isTransactionsLoading.value) {
+            if (_networkConnected.value) {
+                connectionState.value = ConnectionState.CONNECTED
+            } else {
+                connectionState.value = ConnectionState.OFFLINE
+            }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        clearRealtimeListeners()
+        reconnectJob?.cancel()
+        reconnectJob = null
+        try {
+            val connectivityManager = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            networkCallback?.let {
+                connectivityManager?.unregisterNetworkCallback(it)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
@@ -233,21 +643,36 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     fun refreshData() {
         if (isRefreshing.value) return
         isRefreshing.value = true
+        listenerErrorRetryCount = 0 // Reset error backoff count to force-revive connection
+        android.util.Log.d("FinanceViewModel", "Manually refreshing data from Firestore...")
         viewModelScope.launch {
             try {
+                setupRealtimeListeners() // Re-establish streaming listeners
+                val fs = firestore
+                if (fs == null) {
+                    delay(500)
+                    isRefreshing.value = false
+                    return@launch
+                }
                 // Fetch and sync periods
-                firestore.collection("periods").get().addOnCompleteListener { task ->
+                fs.collection("payments").get().addOnCompleteListener { task ->
                     if (task.isSuccessful && task.result != null) {
-                        val list = task.result.documents.mapNotNull { doc ->
+                        val snapshot = task.result
+                        if (snapshot.isEmpty) {
+                            android.util.Log.d("FinanceViewModel", "Refresh payments successfully fetched but snapshot is empty")
+                        } else {
+                            android.util.Log.d("FinanceViewModel", "Refresh payments successfully fetched with ${snapshot.size()} documents")
+                        }
+                        val list = snapshot.documents.mapNotNull { doc ->
                             try {
                                 val docIdLong = doc.id.toLongOrNull()
-                                val id = (doc.get("id") as? Number)?.toLong() ?: docIdLong ?: (1..100000).random().toLong()
+                                val id = (doc.get("id") as? Number)?.toLong() ?: docIdLong ?: stableStringHashToLong(doc.id)
                                 val name = doc.getString("name") ?: ""
                                 val startingBalance = (doc.get("startingBalance") as? Number)?.toDouble() ?: (doc.get("starting_balance") as? Number)?.toDouble() ?: 0.0
                                 val isActive = doc.getBoolean("isActive") ?: doc.getBoolean("is_active") ?: false
                                 Period(id = id, name = name, startingBalance = startingBalance, isActive = isActive)
                             } catch (e: Exception) {
-                                e.printStackTrace()
+                                android.util.Log.e("FinanceViewModel", "Refresh: error parsing payments doc ${doc.id}", e)
                                 null
                             }
                         }.sortedByDescending { it.id }
@@ -258,22 +683,30 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                                 try { repository.insertPeriod(p) } catch (e: Exception) {}
                             }
                         }
+                    } else {
+                        android.util.Log.e("FinanceViewModel", "Refresh payments failed to fetch", task.exception)
                     }
                 }
 
                 // Fetch and sync members
-                firestore.collection("members").get().addOnCompleteListener { task ->
+                fs.collection("members").get().addOnCompleteListener { task ->
                     if (task.isSuccessful && task.result != null) {
-                        val list = task.result.documents.mapNotNull { doc ->
+                        val snapshot = task.result
+                        if (snapshot.isEmpty) {
+                            android.util.Log.d("FinanceViewModel", "Refresh members successfully fetched but snapshot is empty")
+                        } else {
+                            android.util.Log.d("FinanceViewModel", "Refresh members successfully fetched with ${snapshot.size()} documents")
+                        }
+                        val list = snapshot.documents.mapNotNull { doc ->
                             try {
                                 val docIdLong = doc.id.toLongOrNull()
-                                val id = (doc.get("id") as? Number)?.toLong() ?: docIdLong ?: (1..100000).random().toLong()
+                                val id = (doc.get("id") as? Number)?.toLong() ?: docIdLong ?: stableStringHashToLong(doc.id)
                                 val name = doc.getString("name") ?: ""
                                 val notes = doc.getString("notes") ?: ""
                                 val isActive = doc.getBoolean("isActive") ?: doc.getBoolean("is_active") ?: true
                                 Member(id = id, name = name, notes = notes, isActive = isActive)
                             } catch (e: Exception) {
-                                e.printStackTrace()
+                                android.util.Log.e("FinanceViewModel", "Refresh: error parsing members doc ${doc.id}", e)
                                 null
                             }
                         }.sortedBy { it.name.lowercase() }
@@ -284,16 +717,24 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                                 try { repository.insertMember(m) } catch (e: Exception) {}
                             }
                         }
+                    } else {
+                        android.util.Log.e("FinanceViewModel", "Refresh members failed to fetch", task.exception)
                     }
                 }
 
                 // Fetch and sync transactions
-                firestore.collection("transactions").get().addOnCompleteListener { task ->
+                fs.collection("transactions").get().addOnCompleteListener { task ->
                     if (task.isSuccessful && task.result != null) {
-                        val list = task.result.documents.mapNotNull { doc ->
+                        val snapshot = task.result
+                        if (snapshot.isEmpty) {
+                            android.util.Log.d("FinanceViewModel", "Refresh transactions successfully fetched but snapshot is empty")
+                        } else {
+                            android.util.Log.d("FinanceViewModel", "Refresh transactions successfully fetched with ${snapshot.size()} documents")
+                        }
+                        val list = snapshot.documents.mapNotNull { doc ->
                             try {
                                 val docIdLong = doc.id.toLongOrNull()
-                                val id = (doc.get("id") as? Number)?.toLong() ?: docIdLong ?: (1..1000000).random().toLong()
+                                val id = (doc.get("id") as? Number)?.toLong() ?: docIdLong ?: stableStringHashToLong(doc.id)
                                 val pId = (doc.get("periodId") as? Number)?.toLong() ?: (doc.get("period_id") as? Number)?.toLong() ?: 0L
                                 val type = doc.getString("type") ?: ""
                                 val category = doc.getString("category") ?: ""
@@ -314,7 +755,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                                     memberName = mName
                                 )
                             } catch (e: Exception) {
-                                e.printStackTrace()
+                                android.util.Log.e("FinanceViewModel", "Refresh: error parsing transactions doc ${doc.id}", e)
                                 null
                             }
                         }.sortedByDescending { it.date }
@@ -325,12 +766,14 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                                 try { repository.insertTransaction(t) } catch (e: Exception) {}
                             }
                         }
+                    } else {
+                        android.util.Log.e("FinanceViewModel", "Refresh transactions failed to fetch", task.exception)
                     }
                 }
 
                 kotlinx.coroutines.delay(1200)
             } catch (e: Exception) {
-                e.printStackTrace()
+                android.util.Log.e("FinanceViewModel", "Error inside refreshData task scope", e)
             } finally {
                 isRefreshing.value = false
             }
@@ -371,7 +814,12 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         }
         viewModelScope.launch {
             try {
-                firestore.collection("settings").document("admin")
+                val fs = firestore
+                if (fs == null) {
+                    onFailure("Layanan Firestore tidak tersedia!")
+                    return@launch
+                }
+                fs.collection("settings").document("admin")
                     .set(mapOf("password" to newPass))
                     .addOnSuccessListener {
                         adminPasswordState.value = newPass
@@ -402,16 +850,29 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 "isActive" to true,
                 "is_active" to true
             )
-            // deactivate other periods first in Firestore
+            
+            // deactivate other periods first in Room
             try {
                 _periods.value.forEach {
                     if (it.isActive) {
-                        firestore.collection("periods").document(it.id.toString())
-                            .update(mapOf("isActive" to false, "is_active" to false))
+                        repository.insertPeriod(it.copy(isActive = false))
                     }
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
+            } catch (any: Exception) {}
+
+            val fs = firestore
+            if (fs != null) {
+                // deactivate other periods first in Firestore
+                try {
+                    _periods.value.forEach {
+                        if (it.isActive) {
+                            fs.collection("payments").document(it.id.toString())
+                                .update(mapOf("isActive" to false, "is_active" to false))
+                        }
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("FinanceViewModel", "Error deactivating other periods during addPeriod", e)
+                }
             }
             
             // Re-sync Room repository as fallback
@@ -420,7 +881,15 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 repository.selectActivePeriod(id)
             } catch (any: Exception) {}
 
-            firestore.collection("periods").document(id.toString()).set(newPeriodMap)
+            if (fs != null) {
+                fs.collection("payments").document(id.toString()).set(newPeriodMap)
+                    .addOnSuccessListener {
+                        android.util.Log.d("FinanceViewModel", "Successfully added period $name (id: $id) to Firestore payments")
+                    }
+                    .addOnFailureListener { e ->
+                        android.util.Log.e("FinanceViewModel", "Failed to add period $name (id: $id) to Firestore payments", e)
+                    }
+            }
             selectedPeriodId.value = id
         }
     }
@@ -429,14 +898,17 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             selectedPeriodId.value = periodId
             if (periodId != null) {
-                try {
-                    _periods.value.forEach {
-                        val active = (it.id == periodId)
-                        firestore.collection("periods").document(it.id.toString())
-                            .update(mapOf("isActive" to active, "is_active" to active))
+                val fs = firestore
+                if (fs != null) {
+                    try {
+                        _periods.value.forEach {
+                            val active = (it.id == periodId)
+                            fs.collection("payments").document(it.id.toString())
+                                .update(mapOf("isActive" to active, "is_active" to active))
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.e("FinanceViewModel", "Error updating period active state in selectPeriod", e)
                     }
-                } catch (e: Exception) {
-                    e.printStackTrace()
                 }
                 
                 try {
@@ -448,14 +920,23 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
 
     fun deletePeriod(period: Period) {
         viewModelScope.launch {
-            try {
-                firestore.collection("periods").document(period.id.toString()).delete()
-                // delete associated transactions in this period
-                _allTransactionsList.value.filter { it.periodId == period.id }.forEach {
-                    firestore.collection("transactions").document(it.id.toString()).delete()
+            val fs = firestore
+            if (fs != null) {
+                try {
+                    fs.collection("payments").document(period.id.toString()).delete()
+                        .addOnSuccessListener {
+                            android.util.Log.d("FinanceViewModel", "Successfully deleted period ${period.name} from payments")
+                        }
+                        .addOnFailureListener { e ->
+                            android.util.Log.e("FinanceViewModel", "Error deleting period ${period.name} from payments", e)
+                        }
+                    // delete associated transactions in this period
+                    _allTransactionsList.value.filter { it.periodId == period.id }.forEach {
+                        fs.collection("transactions").document(it.id.toString()).delete()
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("FinanceViewModel", "Error deleting period or associated transactions", e)
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
             
             try {
@@ -484,20 +965,26 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 repository.insertMember(Member(id = id, name = name, notes = notes))
             } catch (any: Exception) {}
 
-            firestore.collection("members").document(id.toString()).set(newMemberMap)
+            val fs = firestore
+            if (fs != null) {
+                fs.collection("members").document(id.toString()).set(newMemberMap)
+            }
         }
     }
 
     fun deleteMember(member: Member) {
         viewModelScope.launch {
-            try {
-                firestore.collection("members").document(member.id.toString()).delete()
-                // delete associated transactions for this member
-                _allTransactionsList.value.filter { it.memberId == member.id }.forEach {
-                    firestore.collection("transactions").document(it.id.toString()).delete()
+            val fs = firestore
+            if (fs != null) {
+                try {
+                    fs.collection("members").document(member.id.toString()).delete()
+                    // delete associated transactions for this member
+                    _allTransactionsList.value.filter { it.memberId == member.id }.forEach {
+                        fs.collection("transactions").document(it.id.toString()).delete()
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
             
             try {
@@ -542,17 +1029,23 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     )
                 } catch (any: Exception) {}
 
-                firestore.collection("transactions").document(id.toString()).set(newTxMap)
+                val fs = firestore
+                if (fs != null) {
+                    fs.collection("transactions").document(id.toString()).set(newTxMap)
+                }
             }
         }
     }
 
     fun deleteTransaction(transaction: Transaction) {
         viewModelScope.launch {
-            try {
-                firestore.collection("transactions").document(transaction.id.toString()).delete()
-            } catch (e: Exception) {
-                e.printStackTrace()
+            val fs = firestore
+            if (fs != null) {
+                try {
+                    fs.collection("transactions").document(transaction.id.toString()).delete()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
             
             try {
@@ -599,29 +1092,147 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     )
                 } catch (any: Exception) {}
 
-                firestore.collection("transactions").document(id.toString()).set(newTxMap)
+                val fs = firestore
+                if (fs != null) {
+                    fs.collection("transactions").document(id.toString()).set(newTxMap)
+                }
             }
         }
     }
 
     fun seedSpreadsheetData() {
+        isSeeding = true
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(8000)
+            isSeeding = false
+        }
         viewModelScope.launch {
             try {
-                // Delete existing collections to ensure we replace everything cleanly
-                firestore.collection("periods").get().addOnSuccessListener { qs ->
-                    qs.documents.forEach { doc -> doc.reference.delete() }
-                    
-                    // After deleting, insert new academic periods for 2025/2026
-                    val periodsToSeed = listOf(
-                        Period(id = 1, name = "JANUARY 2025/2026", startingBalance = 0.0, isActive = true),
-                        Period(id = 2, name = "FEB 2025/2026", startingBalance = 0.0, isActive = true),
-                        Period(id = 3, name = "MARET 2025/2026", startingBalance = 0.0, isActive = true),
-                        Period(id = 4, name = "APRIL 2025/2026", startingBalance = 0.0, isActive = true),
-                        Period(id = 5, name = "MEI 2025/2026", startingBalance = 0.0, isActive = true),
-                        Period(id = 6, name = "JUNI 2025/2026", startingBalance = 0.0, isActive = true),
-                        Period(id = 7, name = "JULI 2025/2026", startingBalance = 0.0, isActive = true),
-                        Period(id = 8, name = "AGUST 2025/2026", startingBalance = 0.0, isActive = true)
+                android.util.Log.d("FinanceViewModel", "Seeding default default data to local Room cache first...")
+                
+                // 1. Seed periods to Room (ONLY August 2025/2026 is active)
+                val periodsToSeed = listOf(
+                    Period(id = 1, name = "JANUARY 2025/2026", startingBalance = 0.0, isActive = false),
+                    Period(id = 2, name = "FEB 2025/2026", startingBalance = 0.0, isActive = false),
+                    Period(id = 3, name = "MARET 2025/2026", startingBalance = 0.0, isActive = false),
+                    Period(id = 4, name = "APRIL 2025/2026", startingBalance = 0.0, isActive = false),
+                    Period(id = 5, name = "MEI 2025/2026", startingBalance = 0.0, isActive = false),
+                    Period(id = 6, name = "JUNI 2025/2026", startingBalance = 0.0, isActive = false),
+                    Period(id = 7, name = "JULI 2025/2026", startingBalance = 0.0, isActive = false),
+                    Period(id = 8, name = "AGUST 2025/2026", startingBalance = 0.0, isActive = true)
+                )
+                for (p in periodsToSeed) {
+                    try { repository.insertPeriod(p) } catch (e: Exception) {}
+                }
+
+                // 2. Seed members to Room
+                val membersToSeed = listOf(
+                    Member(id = 1, name = "BG TANTO", notes = "", isActive = true),
+                    Member(id = 2, name = "BG NANANG", notes = "", isActive = true),
+                    Member(id = 3, name = "BG YUDI", notes = "", isActive = true),
+                    Member(id = 4, name = "BG TEMIM", notes = "", isActive = true),
+                    Member(id = 5, name = "BG EPI", notes = "", isActive = true),
+                    Member(id = 6, name = "BG RELLY", notes = "", isActive = true),
+                    Member(id = 7, name = "BG JAKA", notes = "", isActive = true),
+                    Member(id = 8, name = "BG BUDI", notes = "", isActive = true),
+                    Member(id = 9, name = "BG COKI", notes = "", isActive = true),
+                    Member(id = 10, name = "BG SAMSURI", notes = "", isActive = true),
+                    Member(id = 11, name = "BG ROHMAN", notes = "", isActive = true),
+                    Member(id = 12, name = "BG HERU", notes = "", isActive = true),
+                    Member(id = 13, name = "BG TONY", notes = "", isActive = true)
+                )
+                for (m in membersToSeed) {
+                    try { repository.insertMember(m) } catch (e: Exception) {}
+                }
+
+                // 3. Seed transactions to Room
+                val payments = listOf(
+                    Triple(1L, 1L, "BG TANTO"), Triple(1L, 2L, "BG TANTO"), Triple(1L, 3L, "BG TANTO"),
+                    Triple(1L, 4L, "BG TANTO"), Triple(1L, 5L, "BG TANTO"), Triple(1L, 6L, "BG TANTO"),
+                    Triple(2L, 1L, "BG NANANG"), Triple(2L, 2L, "BG NANANG"),
+                    Triple(3L, 1L, "BG YUDI"), Triple(3L, 2L, "BG YUDI"), Triple(3L, 3L, "BG YUDI"),
+                    Triple(4L, 1L, "BG TEMIM"), Triple(4L, 2L, "BG TEMIM"),
+                    Triple(5L, 1L, "BG EPI"), Triple(5L, 2L, "BG EPI"),
+                    Triple(7L, 1L, "BG JAKA"), Triple(7L, 2L, "BG JAKA"), Triple(7L, 3L, "BG JAKA"),
+                    Triple(8L, 1L, "BG BUDI"), Triple(8L, 2L, "BG BUDI"),
+                    Triple(9L, 1L, "BG COKI"), Triple(9L, 2L, "BG COKI"), Triple(9L, 3L, "BG COKI"),
+                    Triple(10L, 1L, "BG SAMSURI"), Triple(10L, 2L, "BG SAMSURI"), Triple(10L, 3L, "BG SAMSURI"), Triple(10L, 4L, "BG SAMSURI"),
+                    Triple(12L, 4L, "BG HERU"), Triple(12L, 5L, "BG HERU"),
+                    Triple(13L, 1L, "BG TONY"), Triple(13L, 2L, "BG TONY"), Triple(13L, 3L, "BG TONY"), Triple(13L, 4L, "BG TONY")
+                )
+                for (p in payments) {
+                    val txId = 1000 + p.first * 100 + p.second
+                    val pName = when(p.second) {
+                        1L -> "JANUARY 2025/2026"
+                        2L -> "FEB 2025/2026"
+                        3L -> "MARET 2025/2026"
+                        4L -> "APRIL 2025/2026"
+                        5L -> "MEI 2025/2026"
+                        6L -> "JUNI 2025/2026"
+                        7L -> "JULI 2025/2026"
+                        8L -> "AGUST 2025/2026"
+                        else -> ""
+                    }
+                    try {
+                        repository.insertTransaction(
+                            Transaction(
+                                id = txId,
+                                periodId = p.second,
+                                type = "INCOME",
+                                category = "Iuran Bulanan",
+                                amount = 10000.0,
+                                description = "Iuran ${p.third} - $pName",
+                                memberId = p.first,
+                                memberName = p.third
+                            )
+                        )
+                    } catch (e: Exception) {}
+                }
+
+                // Add starting balance income to Room
+                try {
+                    repository.insertTransaction(
+                        Transaction(
+                            id = 9999L,
+                            periodId = 1L,
+                            type = "INCOME",
+                            category = "Saldo Awal",
+                            amount = 755000.0,
+                            description = "Saldo Awal Kas KB SPASI"
+                        )
                     )
+                } catch (e: Exception) {}
+
+                // Add expense transaction to Room
+                try {
+                    repository.insertTransaction(
+                        Transaction(
+                            id = 8888L,
+                            periodId = 1L,
+                            type = "EXPENSE",
+                            category = "Pengeluaran",
+                            amount = 573000.0,
+                            description = "Pengeluaran Kas Belanja & Operasional"
+                        )
+                    )
+                } catch (e: Exception) {}
+
+                android.util.Log.d("FinanceViewModel", "Local Room seeding completed successfully!")
+
+                // Now asynchronously upload / seed Firestore if it's empty
+                val fs = firestore
+                if (fs == null) {
+                    sharedPrefs.edit().putBoolean("spreadsheet_synced_2025_v2", true).apply()
+                    isSeeding = false
+                    return@launch
+                }
+                fs.collection("payments").get().addOnSuccessListener { qs ->
+                    if (qs != null && !qs.isEmpty) {
+                        android.util.Log.d("FinanceViewModel", "Firestore payments already contains data, skipping cloud upload.")
+                        sharedPrefs.edit().putBoolean("spreadsheet_synced_2025_v2", true).apply()
+                        return@addOnSuccessListener
+                    }
+                    
                     for (p in periodsToSeed) {
                         val pMap = mapOf(
                             "id" to p.id,
@@ -629,33 +1240,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                             "startingBalance" to p.startingBalance,
                             "isActive" to p.isActive
                         )
-                        firestore.collection("periods").document(p.id.toString()).set(pMap)
-                        viewModelScope.launch {
-                            try {
-                                repository.insertPeriod(p)
-                            } catch (e: Exception) {}
-                        }
+                        fs.collection("payments").document(p.id.toString()).set(pMap)
                     }
-                }
 
-                firestore.collection("members").get().addOnSuccessListener { qs ->
-                    qs.documents.forEach { doc -> doc.reference.delete() }
-                    
-                    val membersToSeed = listOf(
-                        Member(id = 1, name = "BG TANTO", notes = "", isActive = true),
-                        Member(id = 2, name = "BG NANANG", notes = "", isActive = true),
-                        Member(id = 3, name = "BG YUDI", notes = "", isActive = true),
-                        Member(id = 4, name = "BG TEMIM", notes = "", isActive = true),
-                        Member(id = 5, name = "BG EPI", notes = "", isActive = true),
-                        Member(id = 6, name = "BG RELLY", notes = "", isActive = true),
-                        Member(id = 7, name = "BG JAKA", notes = "", isActive = true),
-                        Member(id = 8, name = "BG BUDI", notes = "", isActive = true),
-                        Member(id = 9, name = "BG COKI", notes = "", isActive = true),
-                        Member(id = 10, name = "BG SAMSURI", notes = "", isActive = true),
-                        Member(id = 11, name = "BG ROHMAN", notes = "", isActive = true),
-                        Member(id = 12, name = "BG HERU", notes = "", isActive = true),
-                        Member(id = 13, name = "BG TONY", notes = "", isActive = true)
-                    )
                     for (m in membersToSeed) {
                         val mMap = mapOf(
                             "id" to m.id,
@@ -663,32 +1250,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                             "notes" to m.notes,
                             "isActive" to m.isActive
                         )
-                        firestore.collection("members").document(m.id.toString()).set(mMap)
-                        viewModelScope.launch {
-                            try {
-                                repository.insertMember(m)
-                            } catch (e: Exception) {}
-                        }
+                        fs.collection("members").document(m.id.toString()).set(mMap)
                     }
-                }
-
-                firestore.collection("transactions").get().addOnSuccessListener { qs ->
-                    qs.documents.forEach { doc -> doc.reference.delete() }
-                    
-                    val payments = listOf(
-                        Triple(1L, 1L, "BG TANTO"), Triple(1L, 2L, "BG TANTO"), Triple(1L, 3L, "BG TANTO"),
-                        Triple(1L, 4L, "BG TANTO"), Triple(1L, 5L, "BG TANTO"), Triple(1L, 6L, "BG TANTO"),
-                        Triple(2L, 1L, "BG NANANG"), Triple(2L, 2L, "BG NANANG"),
-                        Triple(3L, 1L, "BG YUDI"), Triple(3L, 2L, "BG YUDI"), Triple(3L, 3L, "BG YUDI"),
-                        Triple(4L, 1L, "BG TEMIM"), Triple(4L, 2L, "BG TEMIM"),
-                        Triple(5L, 1L, "BG EPI"), Triple(5L, 2L, "BG EPI"),
-                        Triple(7L, 1L, "BG JAKA"), Triple(7L, 2L, "BG JAKA"), Triple(7L, 3L, "BG JAKA"),
-                        Triple(8L, 1L, "BG BUDI"), Triple(8L, 2L, "BG BUDI"),
-                        Triple(9L, 1L, "BG COKI"), Triple(9L, 2L, "BG COKI"), Triple(9L, 3L, "BG COKI"),
-                        Triple(10L, 1L, "BG SAMSURI"), Triple(10L, 2L, "BG SAMSURI"), Triple(10L, 3L, "BG SAMSURI"), Triple(10L, 4L, "BG SAMSURI"),
-                        Triple(12L, 4L, "BG HERU"), Triple(12L, 5L, "BG HERU"),
-                        Triple(13L, 1L, "BG TONY"), Triple(13L, 2L, "BG TONY"), Triple(13L, 3L, "BG TONY"), Triple(13L, 4L, "BG TONY")
-                    )
 
                     for (p in payments) {
                         val txId = 1000 + p.first * 100 + p.second
@@ -717,26 +1280,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                             "memberName" to p.third,
                             "member_name" to p.third
                         )
-                        firestore.collection("transactions").document(txId.toString()).set(txMap)
-                        viewModelScope.launch {
-                            try {
-                                repository.insertTransaction(
-                                    Transaction(
-                                        id = txId,
-                                        periodId = p.second,
-                                        type = "INCOME",
-                                        category = "Iuran Bulanan",
-                                        amount = 10000.0,
-                                        description = "Iuran ${p.third} - $pName",
-                                        memberId = p.first,
-                                        memberName = p.third
-                                    )
-                                )
-                            } catch (e: Exception) {}
-                        }
+                        fs.collection("transactions").document(txId.toString()).set(txMap)
                     }
 
-                    // Add starting balance income
                     val startTxMap = mapOf(
                         "id" to 9999L,
                         "periodId" to 1L,
@@ -746,28 +1292,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                         "amount" to 755000.0,
                         "description" to "Saldo Awal Kas KB SPASI",
                         "date" to System.currentTimeMillis() - 12 * 86400000L,
-                        "memberId" to null,
-                        "member_id" to null,
-                        "memberName" to null,
-                        "member_name" to null
                     )
-                    firestore.collection("transactions").document("9999").set(startTxMap)
-                    viewModelScope.launch {
-                        try {
-                            repository.insertTransaction(
-                                Transaction(
-                                    id = 9999L,
-                                    periodId = 1L,
-                                    type = "INCOME",
-                                    category = "Saldo Awal",
-                                    amount = 755000.0,
-                                    description = "Saldo Awal Kas KB SPASI"
-                                )
-                            )
-                        } catch (e: Exception) {}
-                    }
+                    fs.collection("transactions").document("9999").set(startTxMap)
 
-                    // Add expense transaction
                     val expTxMap = mapOf(
                         "id" to 8888L,
                         "periodId" to 1L,
@@ -777,31 +1304,18 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                         "amount" to 573000.0,
                         "description" to "Pengeluaran Kas Belanja & Operasional",
                         "date" to System.currentTimeMillis() - 8 * 86400000L,
-                        "memberId" to null,
-                        "member_id" to null,
-                        "memberName" to null,
-                        "member_name" to null
                     )
-                    firestore.collection("transactions").document("8888").set(expTxMap)
-                    viewModelScope.launch {
-                        try {
-                            repository.insertTransaction(
-                                Transaction(
-                                    id = 8888L,
-                                    periodId = 1L,
-                                    type = "EXPENSE",
-                                    category = "Pengeluaran",
-                                    amount = 573000.0,
-                                    description = "Pengeluaran Kas Belanja & Operasional"
-                                )
-                            )
-                        } catch (e: Exception) {}
-                    }
-                }
+                    fs.collection("transactions").document("8888").set(expTxMap)
 
+                    sharedPrefs.edit().putBoolean("spreadsheet_synced_2025_v2", true).apply()
+                    android.util.Log.d("FinanceViewModel", "Successfully completed Firestore cloud seeding!")
+                }
+                
                 sharedPrefs.edit().putBoolean("spreadsheet_synced_2025_v2", true).apply()
+                isSeeding = false
             } catch (e: Exception) {
-                e.printStackTrace()
+                android.util.Log.e("FinanceViewModel", "Error while seeding spreadsheet data", e)
+                isSeeding = false
             }
         }
     }
@@ -809,18 +1323,21 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     // Database Reset
     fun clearAllData() {
         viewModelScope.launch {
-            try {
-                firestore.collection("periods").get().addOnSuccessListener { snapshot ->
-                    snapshot.documents.forEach { it.reference.delete() }
+            val fs = firestore
+            if (fs != null) {
+                try {
+                    fs.collection("payments").get().addOnSuccessListener { snapshot ->
+                        snapshot.documents.forEach { it.reference.delete() }
+                    }
+                    fs.collection("members").get().addOnSuccessListener { snapshot ->
+                        snapshot.documents.forEach { it.reference.delete() }
+                    }
+                    fs.collection("transactions").get().addOnSuccessListener { snapshot ->
+                        snapshot.documents.forEach { it.reference.delete() }
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("FinanceViewModel", "Error in clearAllData resetting Firestore collections", e)
                 }
-                firestore.collection("members").get().addOnSuccessListener { snapshot ->
-                    snapshot.documents.forEach { it.reference.delete() }
-                }
-                firestore.collection("transactions").get().addOnSuccessListener { snapshot ->
-                    snapshot.documents.forEach { it.reference.delete() }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
             
             try {

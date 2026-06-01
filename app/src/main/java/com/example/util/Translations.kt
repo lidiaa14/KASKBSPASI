@@ -55,7 +55,11 @@ object Translations {
         "confirm_delete" to "Apakah Anda yakin ingin menghapus data ini?",
         "export_pdf" to "Ekspor Laporan PDF/HTML",
         "pdf_downloaded" to "Laporan berhasil diekspor!",
-        "no_active_period" to "Silakan buat periode aktif terlebih dahulu di tab spreadsheet/pengaturan."
+        "no_active_period" to "Silakan buat periode aktif terlebih dahulu di tab spreadsheet/pengaturan.",
+        "syncing_data" to "Sinkronisasi data kas...",
+        "syncing" to "sinkronisasi...",
+        "reconnecting" to "menghubungkan...",
+        "offline_mode" to "mode offline"
     )
 
     private val enMap = mapOf(
@@ -112,7 +116,11 @@ object Translations {
         "confirm_delete" to "Are you sure you want to delete this data?",
         "export_pdf" to "Export PDF/HTML Report",
         "pdf_downloaded" to "Report exported successfully!",
-        "no_active_period" to "Please create an active period first in spreadsheet or settings tab."
+        "no_active_period" to "Please create an active period first in spreadsheet or settings tab.",
+        "syncing_data" to "Syncing cash data...",
+        "syncing" to "syncing...",
+        "reconnecting" to "reconnecting...",
+        "offline_mode" to "offline mode"
     )
 
     fun get(key: String, lang: String): String {

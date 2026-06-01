@@ -70,6 +70,7 @@ fun FinanceApp(viewModel: FinanceViewModel) {
     val metrics by viewModel.metrics.collectAsStateWithLifecycle()
     val selectedPeriodId by viewModel.selectedPeriodId.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
 
     val selectedPeriod = periods.find { it.id == selectedPeriodId }
 
@@ -120,15 +121,56 @@ fun FinanceApp(viewModel: FinanceViewModel) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    selectedPeriod?.let {
-                        Text(
-                            text = "${if (currentLanguage == "en") "Period" else "Periode"}: ${it.name}",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        selectedPeriod?.let {
+                            Text(
+                                text = "${if (currentLanguage == "en") "Period" else "Periode"}: ${it.name}",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        if (connectionState != FinanceViewModel.ConnectionState.CONNECTED) {
+                            val (textKey, badgeBg, badgeText) = when (connectionState) {
+                                FinanceViewModel.ConnectionState.SYNCING -> Triple("syncing", MaterialTheme.colorScheme.tertiaryContainer, MaterialTheme.colorScheme.onTertiaryContainer)
+                                FinanceViewModel.ConnectionState.RECONNECTING -> Triple("reconnecting", MaterialTheme.colorScheme.errorContainer, MaterialTheme.colorScheme.onErrorContainer)
+                                FinanceViewModel.ConnectionState.OFFLINE -> Triple("offline_mode", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant)
+                                else -> Triple("", Color.Transparent, Color.Transparent)
+                            }
+                            if (textKey.isNotEmpty()) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(badgeBg)
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        .testTag("connection_status_badge")
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(6.dp)
+                                                .clip(RoundedCornerShape(3.dp))
+                                                .background(badgeText)
+                                        )
+                                        Text(
+                                            text = t(textKey),
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = badgeText
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -231,17 +273,38 @@ fun FinanceApp(viewModel: FinanceViewModel) {
         }
     ) { paddingValues ->
         val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
+        val isDataLoading by viewModel.isDataLoading.collectAsStateWithLifecycle()
 
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            PullToRefreshContainer(
-                isRefreshing = isRefreshing,
-                onRefresh = { viewModel.refreshData() }
-            ) {
-                when (currentTab) {
+            if (isDataLoading) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    CircularProgressIndicator(
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.testTag("sync_progress_indicator")
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = t("syncing_data"),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        textAlign = TextAlign.Center
+                    )
+                }
+            } else {
+                PullToRefreshContainer(
+                    isRefreshing = isRefreshing,
+                    onRefresh = { viewModel.refreshData() }
+                ) {
+                    when (currentTab) {
                     "Dashboard" -> DashboardTab(
                         viewModel = viewModel,
                         metrics = metrics,
@@ -311,6 +374,7 @@ fun FinanceApp(viewModel: FinanceViewModel) {
                         onResetData = { viewModel.clearAllData() }
                     )
                 }
+            }
             }
         }
     }
@@ -1346,8 +1410,9 @@ fun MembersTab(
     }
 
     // Clicked Member details custom popup with smooth exit animation
-    if (memberToShowDetails != null) {
-        val mb = memberToShowDetails!!
+    val currentMember = memberToShowDetails
+    if (currentMember != null) {
+        val mb = currentMember
         
         // Calculations
         val memberAllPaid = allTransactions.filter { it.memberId == mb.id && it.type == "INCOME" }

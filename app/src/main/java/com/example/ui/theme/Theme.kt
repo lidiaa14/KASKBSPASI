@@ -73,9 +73,20 @@ fun FinanceTheme(
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
-            val window = (view.context as Activity).window
-            window.statusBarColor = colorScheme.surface.toArgb()
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkTheme
+            var currentContext = view.context
+            var activity: Activity? = null
+            while (currentContext is android.content.ContextWrapper) {
+                if (currentContext is Activity) {
+                    activity = currentContext
+                    break
+                }
+                currentContext = currentContext.baseContext
+            }
+            activity?.let { act ->
+                val window = act.window
+                window.statusBarColor = colorScheme.surface.toArgb()
+                WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkTheme
+            }
         }
     }
 
