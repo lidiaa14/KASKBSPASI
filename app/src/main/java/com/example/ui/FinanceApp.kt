@@ -900,11 +900,11 @@ fun DashboardTab(
                                 val ratioIn = incoming / totalFlow
                                 val ratioOut = outgoing / totalFlow
 
-                                val barHeightMax = canvasHeight - 30f
+                                val barHeightMax = (canvasHeight - 30f).coerceAtLeast(0f)
                                 val barWidth = 60.dp.toPx()
 
-                                val inBarHeight = barHeightMax * ratioIn
-                                val outBarHeight = barHeightMax * ratioOut
+                                val inBarHeight = (barHeightMax * ratioIn).coerceAtLeast(0f)
+                                val outBarHeight = (barHeightMax * ratioOut).coerceAtLeast(0f)
 
                                 // Draw Income Bar
                                 drawRect(

@@ -24,7 +24,7 @@ import kotlinx.coroutines.delay
 @OptIn(ExperimentalCoroutinesApi::class)
 class FinanceViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repository: FinanceRepository
+    private val repository: FinanceRepository = FinanceRepository(AppDatabase.getDatabase(application).financeDao())
     private val sharedPrefs = application.getSharedPreferences("kb_spasi_prefs", Context.MODE_PRIVATE)
 
     // Dark mode state - IMPORTANT: defaults to false (Light Mode)!
@@ -55,35 +55,73 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 FirebaseApp.getInstance()
             }
             FirebaseFirestore.getInstance(app)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             android.util.Log.e("FinanceViewModel", "Firebase initialization failed, utilizing default fallback", e)
             try {
                 FirebaseFirestore.getInstance()
-            } catch (ex: Exception) {
+            } catch (ex: Throwable) {
                 android.util.Log.e("FinanceViewModel", "Firestore fallback also failed and is unavailable", ex)
                 null
             }
         }
     }
 
-    // Dynamic Lists from Database (Powered directly by realtime Firestore)
-    private val _periods = MutableStateFlow<List<Period>>(emptyList())
-    val periods: StateFlow<List<Period>> = _periods.asStateFlow()
+    // Dynamic Lists directly bound to the Room Local Database as SSOT
+    val periods: StateFlow<List<Period>> = repository.allPeriods
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
 
-    private val _members = MutableStateFlow<List<Member>>(emptyList())
-    val members: StateFlow<List<Member>> = _members.asStateFlow()
+    val members: StateFlow<List<Member>> = repository.allMembers
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
 
-    private val _allTransactionsList = MutableStateFlow<List<Transaction>>(emptyList())
-    val allTransactionsList: StateFlow<List<Transaction>> = _allTransactionsList.asStateFlow()
+    val allTransactionsList: StateFlow<List<Transaction>> = repository.allTransactions
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
     
     // Currently selected Period ID (null means "All Time")
     val selectedPeriodId = MutableStateFlow<Long?>(null)
     
     // Transactions inside the selected Period
-    val currentTransactions: StateFlow<List<Transaction>>
+    val currentTransactions: StateFlow<List<Transaction>> = combine(selectedPeriodId, allTransactionsList) { periodId, list ->
+        if (periodId == null) {
+            list
+        } else {
+            list.filter { it.periodId == periodId }
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // Calculated metrics of the active/selected Period
-    val metrics: StateFlow<FinanceMetrics>
+    val metrics: StateFlow<FinanceMetrics> = combine(selectedPeriodId, periods, currentTransactions) { periodId, periodList, transactions ->
+        val matchingPeriod = periodList.find { it.id == periodId }
+        val startBalance = matchingPeriod?.startingBalance ?: 0.0
+        
+        var inc = 0.0
+        var exp = 0.0
+        transactions.forEach {
+            if (it.type == "INCOME") {
+                 inc += it.amount
+            } else {
+                 exp += it.amount
+            }
+        }
+        
+        FinanceMetrics(
+            startingBalance = startBalance,
+            totalIncome = inc,
+            totalExpenses = exp,
+            currentBalance = startBalance + inc - exp
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), FinanceMetrics())
 
     // Search query
     val searchQuery = MutableStateFlow("")
@@ -115,8 +153,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     val isDataLoading = combine(
         combine(isPeriodsLoading, isMembersLoading, isTransactionsLoading) { p, m, t -> p || m || t },
         networkConnected,
-        _periods,
-        _allTransactionsList
+        periods,
+        allTransactionsList
     ) { anyLoading, isOnline, pList, tList ->
         if (isOnline) {
             anyLoading
@@ -127,7 +165,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 anyLoading
             }
         }
-    }.stateIn(viewModelScope, SharingStarted.Lazily, true)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
     private fun safeDouble(value: Any?): Double {
         return when (value) {
@@ -151,94 +189,13 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         for (char in docId) {
             hash = 31L * hash + char.code
         }
-        val absHash = java.lang.Math.abs(hash)
+        val absHash = kotlin.math.abs(hash)
         return if (absHash <= 0L) 1L else absHash
     }
 
     init {
-        val database = AppDatabase.getDatabase(application)
-        repository = FinanceRepository(database.financeDao())
-
-        // 1. Set up active and reactive collections from Room local database
-        viewModelScope.launch {
-            try {
-                repository.allPeriods.collect { list ->
-                    if (list.isNotEmpty()) {
-                        _periods.value = list
-                        
-                        // Select active period immediately if list has active period
-                        if (selectedPeriodId.value == null) {
-                            val active = list.find { it.isActive }
-                            if (active != null) {
-                                selectedPeriodId.value = active.id
-                            } else {
-                                selectedPeriodId.value = list.firstOrNull()?.id
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-
-        viewModelScope.launch {
-            try {
-                repository.allMembers.collect { list ->
-                    if (list.isNotEmpty()) {
-                        _members.value = list
-                    }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-
-        viewModelScope.launch {
-            try {
-                repository.allTransactions.collect { list ->
-                    if (list.isNotEmpty()) {
-                        _allTransactionsList.value = list
-                    }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-
-        // Reactively pull transactions when the selected period changes
-        currentTransactions = combine(selectedPeriodId, allTransactionsList) { periodId, list ->
-            if (periodId == null) {
-                list
-            } else {
-                list.filter { it.periodId == periodId }
-            }
-        }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
-
-        // Reactively calculate metrics when selected period OR transactions list changes
-        metrics = combine(selectedPeriodId, periods, currentTransactions) { periodId, periodList, transactions ->
-            val matchingPeriod = periodList.find { it.id == periodId }
-            val startBalance = matchingPeriod?.startingBalance ?: 0.0
-            
-            var inc = 0.0
-            var exp = 0.0
-            transactions.forEach {
-                if (it.type == "INCOME") {
-                     inc += it.amount
-                } else {
-                     exp += it.amount
-                }
-            }
-            
-            FinanceMetrics(
-                startingBalance = startBalance,
-                totalIncome = inc,
-                totalExpenses = exp,
-                currentBalance = startBalance + inc - exp
-            )
-        }.stateIn(viewModelScope, SharingStarted.Lazily, FinanceMetrics())
-
-        // Autoload the active period on launch if selectedPeriodId is still null
+        // Autoload disabled - defaulting to "Semua Waktu" (All Time / null) on launch
+        /*
         viewModelScope.launch {
             periods.filter { it.isNotEmpty() }.firstOrNull()?.let { list ->
                 if (selectedPeriodId.value == null) {
@@ -251,6 +208,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
         }
+        */
 
         // Trigger spreadsheet seeder if it hasn't been run yet
         if (!sharedPrefs.getBoolean("spreadsheet_synced_2025_v2", false)) {
@@ -411,9 +369,6 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                             return@addSnapshotListener
                         }
                         
-                        if (list.isNotEmpty()) {
-                            _periods.value = list
-                        }
                         checkSyncStatus()
 
                         viewModelScope.launch {
@@ -480,9 +435,6 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                             return@addSnapshotListener
                         }
 
-                        if (list.isNotEmpty()) {
-                            _members.value = list
-                        }
                         checkSyncStatus()
 
                         viewModelScope.launch {
@@ -559,9 +511,6 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                             return@addSnapshotListener
                         }
 
-                        if (list.isNotEmpty()) {
-                            _allTransactionsList.value = list
-                        }
                         checkSyncStatus()
 
                         viewModelScope.launch {
@@ -676,7 +625,6 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                                 null
                             }
                         }.sortedByDescending { it.id }
-                        _periods.value = list
                         
                         viewModelScope.launch {
                             for (p in list) {
@@ -710,7 +658,6 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                                 null
                             }
                         }.sortedBy { it.name.lowercase() }
-                        _members.value = list
                         
                         viewModelScope.launch {
                             for (m in list) {
@@ -759,7 +706,6 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                                 null
                             }
                         }.sortedByDescending { it.date }
-                        _allTransactionsList.value = list
                         
                         viewModelScope.launch {
                             for (t in list) {
@@ -853,7 +799,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
             
             // deactivate other periods first in Room
             try {
-                _periods.value.forEach {
+                periods.value.forEach {
                     if (it.isActive) {
                         repository.insertPeriod(it.copy(isActive = false))
                     }
@@ -864,7 +810,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
             if (fs != null) {
                 // deactivate other periods first in Firestore
                 try {
-                    _periods.value.forEach {
+                    periods.value.forEach {
                         if (it.isActive) {
                             fs.collection("payments").document(it.id.toString())
                                 .update(mapOf("isActive" to false, "is_active" to false))
@@ -901,7 +847,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 val fs = firestore
                 if (fs != null) {
                     try {
-                        _periods.value.forEach {
+                        periods.value.forEach {
                             val active = (it.id == periodId)
                             fs.collection("payments").document(it.id.toString())
                                 .update(mapOf("isActive" to active, "is_active" to active))
@@ -931,7 +877,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                             android.util.Log.e("FinanceViewModel", "Error deleting period ${period.name} from payments", e)
                         }
                     // delete associated transactions in this period
-                    _allTransactionsList.value.filter { it.periodId == period.id }.forEach {
+                    allTransactionsList.value.filter { it.periodId == period.id }.forEach {
                         fs.collection("transactions").document(it.id.toString()).delete()
                     }
                 } catch (e: Exception) {
@@ -979,7 +925,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 try {
                     fs.collection("members").document(member.id.toString()).delete()
                     // delete associated transactions for this member
-                    _allTransactionsList.value.filter { it.memberId == member.id }.forEach {
+                    allTransactionsList.value.filter { it.memberId == member.id }.forEach {
                         fs.collection("transactions").document(it.id.toString()).delete()
                     }
                 } catch (e: Exception) {
