@@ -1586,7 +1586,7 @@ fun MembersTab(
                                                     if (isAdminMode) {
                                                         Checkbox(
                                                             checked = isPaidInPeriod,
-                                                            onCheckedChange = null,
+                                                            onCheckedChange = { viewModel.togglePeriodPayment(mb, pr) },
                                                             colors = CheckboxDefaults.colors(
                                                                 checkedColor = if (isSystemInDarkTheme()) Color(0xFF34D399) else Color(0xFF047857)
                                                             ),
