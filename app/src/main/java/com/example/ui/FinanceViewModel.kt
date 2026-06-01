@@ -127,7 +127,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 anyLoading
             }
         }
-    }.stateIn(viewModelScope, SharingStarted.Lazily, true)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
     private fun safeDouble(value: Any?): Double {
         return when (value) {
@@ -163,7 +163,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             try {
                 repository.allPeriods.collect { list ->
-                    if (list.isNotEmpty()) {
+                    if (!_networkConnected.value || _periods.value.isEmpty()) {
                         _periods.value = list
                         
                         // Select active period immediately if list has active period
@@ -185,7 +185,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             try {
                 repository.allMembers.collect { list ->
-                    if (list.isNotEmpty()) {
+                    if (!_networkConnected.value || _members.value.isEmpty()) {
                         _members.value = list
                     }
                 }
@@ -197,7 +197,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             try {
                 repository.allTransactions.collect { list ->
-                    if (list.isNotEmpty()) {
+                    if (!_networkConnected.value || _allTransactionsList.value.isEmpty()) {
                         _allTransactionsList.value = list
                     }
                 }
@@ -213,7 +213,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
             } else {
                 list.filter { it.periodId == periodId }
             }
-        }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
         // Reactively calculate metrics when selected period OR transactions list changes
         metrics = combine(selectedPeriodId, periods, currentTransactions) { periodId, periodList, transactions ->
@@ -236,7 +236,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 totalExpenses = exp,
                 currentBalance = startBalance + inc - exp
             )
-        }.stateIn(viewModelScope, SharingStarted.Lazily, FinanceMetrics())
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, FinanceMetrics())
 
         // Autoload the active period on launch if selectedPeriodId is still null
         viewModelScope.launch {
@@ -411,9 +411,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                             return@addSnapshotListener
                         }
                         
-                        if (list.isNotEmpty()) {
-                            _periods.value = list
-                        }
+                        _periods.value = list
                         checkSyncStatus()
 
                         viewModelScope.launch {
@@ -422,11 +420,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                                     repository.insertPeriod(p)
                                 }
                                 val localPeriods = repository.allPeriods.firstOrNull() ?: emptyList()
-                                if (list.isNotEmpty()) {
-                                    for (localP in localPeriods) {
-                                        if (list.none { it.id == localP.id }) {
-                                            repository.deletePeriod(localP)
-                                        }
+                                for (localP in localPeriods) {
+                                    if (list.none { it.id == localP.id }) {
+                                        repository.deletePeriod(localP)
                                     }
                                 }
                             } catch (e: Exception) {
@@ -480,9 +476,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                             return@addSnapshotListener
                         }
 
-                        if (list.isNotEmpty()) {
-                            _members.value = list
-                        }
+                        _members.value = list
                         checkSyncStatus()
 
                         viewModelScope.launch {
@@ -491,11 +485,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                                     repository.insertMember(m)
                                 }
                                 val localMembers = repository.allMembers.firstOrNull() ?: emptyList()
-                                if (list.isNotEmpty()) {
-                                    for (localM in localMembers) {
-                                        if (list.none { it.id == localM.id }) {
-                                            repository.deleteMember(localM)
-                                        }
+                                for (localM in localMembers) {
+                                    if (list.none { it.id == localM.id }) {
+                                        repository.deleteMember(localM)
                                     }
                                 }
                             } catch (e: Exception) {
@@ -559,9 +551,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                             return@addSnapshotListener
                         }
 
-                        if (list.isNotEmpty()) {
-                            _allTransactionsList.value = list
-                        }
+                        _allTransactionsList.value = list
                         checkSyncStatus()
 
                         viewModelScope.launch {
@@ -570,11 +560,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                                     repository.insertTransaction(t)
                                 }
                                 val localTxs = repository.allTransactions.firstOrNull() ?: emptyList()
-                                if (list.isNotEmpty()) {
-                                    for (localT in localTxs) {
-                                        if (list.none { it.id == localT.id }) {
-                                            repository.deleteTransaction(localT)
-                                        }
+                                for (localT in localTxs) {
+                                    if (list.none { it.id == localT.id }) {
+                                        repository.deleteTransaction(localT)
                                     }
                                 }
                             } catch (e: Exception) {
