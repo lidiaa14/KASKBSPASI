@@ -150,6 +150,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var reconnectJob: Job? = null
 
+    private val listenerStartTime = System.currentTimeMillis()
+    private val locallyAddedTxIds = java.util.Collections.synchronizedSet(java.util.HashSet<Long>())
+
     val isDataLoading = combine(
         combine(isPeriodsLoading, isMembersLoading, isTransactionsLoading) { p, m, t -> p || m || t },
         networkConnected,
@@ -471,6 +474,47 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     }
                     if (snapshot != null) {
                         listenerErrorRetryCount = 0
+                        
+                        // Real-time broadcast notification trigger when other devices add data
+                        for (dc in snapshot.documentChanges) {
+                            if (dc.type == com.google.firebase.firestore.DocumentChange.Type.ADDED) {
+                                val doc = dc.document
+                                try {
+                                    val docIdLong = doc.id.toLongOrNull()
+                                    val id = safeLong(doc.get("id")) ?: docIdLong ?: stableStringHashToLong(doc.id)
+                                    val date = safeLong(doc.get("date")) ?: 0L
+                                    val isLocal = locallyAddedTxIds.contains(id)
+                                    
+                                    if (!isLocal && date > listenerStartTime - 5000) {
+                                        val type = doc.getString("type") ?: ""
+                                        val amount = safeDouble(doc.get("amount"))
+                                        val description = doc.getString("description") ?: ""
+                                        val mName = doc.getString("memberName") ?: doc.getString("member_name")
+                                        
+                                        val currencyFormat = java.text.NumberFormat.getCurrencyInstance(java.util.Locale("id", "ID")).apply {
+                                            maximumFractionDigits = 0
+                                        }
+                                        val formattedAmount = currencyFormat.format(amount)
+                                        
+                                        val title = if (type == "INCOME") "Pembayaran Kas Baru" else "Pengeluaran Kas Baru"
+                                        val body = if (type == "INCOME" && !mName.isNullOrBlank()) {
+                                            "$mName bayar kas Rp $formattedAmount"
+                                        } else {
+                                            "Pengeluaran: $description senilai Rp $formattedAmount"
+                                        }
+                                        
+                                        com.example.util.NotificationHelper.showNotification(
+                                            getApplication<Application>().applicationContext,
+                                            title,
+                                            body
+                                        )
+                                    }
+                                } catch (e: Exception) {
+                                    android.util.Log.e("FinanceViewModel", "Broadcast notification trigger error", e)
+                                }
+                            }
+                        }
+
                         if (snapshot.isEmpty) {
                             android.util.Log.d("FinanceViewModel", "Firestore transactions: Snapshot received, but it is empty!")
                         } else {
@@ -940,45 +984,50 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     }
 
     // Transaction actions
-    fun addTransaction(type: String, category: String, amount: Double, description: String, memberId: Long?, memberName: String?) {
-        viewModelScope.launch {
-            val currentPeriodId = selectedPeriodId.value
-            if (currentPeriodId != null) {
-                val id = System.currentTimeMillis() + (1..1000).random()
-                val newTxMap = mutableMapOf<String, Any?>(
-                    "id" to id,
-                    "periodId" to currentPeriodId,
-                    "period_id" to currentPeriodId,
-                    "type" to type,
-                    "category" to category,
-                    "amount" to amount,
-                    "description" to description,
-                    "date" to System.currentTimeMillis(),
-                    "memberId" to memberId,
-                    "member_id" to memberId,
-                    "memberName" to memberName,
-                    "member_name" to memberName
-                )
-                
-                try {
-                    repository.insertTransaction(
-                        Transaction(
-                            id = id,
-                            periodId = currentPeriodId,
-                            type = type,
-                            category = category,
-                            amount = amount,
-                            description = description,
-                            memberId = memberId,
-                            memberName = memberName
-                        )
-                    )
-                } catch (any: Exception) {}
+    fun isMemberPaidForPeriod(memberId: Long?, periodId: Long): Boolean {
+        if (memberId == null) return false
+        return allTransactionsList.value.any { 
+            it.memberId == memberId && it.periodId == periodId && it.type == "INCOME" 
+        }
+    }
 
-                val fs = firestore
-                if (fs != null) {
-                    fs.collection("transactions").document(id.toString()).set(newTxMap)
-                }
+    fun addTransaction(type: String, category: String, amount: Double, description: String, memberId: Long?, memberName: String?, periodId: Long) {
+        viewModelScope.launch {
+            val id = System.currentTimeMillis() + (1..1000).random()
+            locallyAddedTxIds.add(id)
+            val newTxMap = mutableMapOf<String, Any?>(
+                "id" to id,
+                "periodId" to periodId,
+                "period_id" to periodId,
+                "type" to type,
+                "category" to category,
+                "amount" to amount,
+                "description" to description,
+                "date" to System.currentTimeMillis(),
+                "memberId" to memberId,
+                "member_id" to memberId,
+                "memberName" to memberName,
+                "member_name" to memberName
+            )
+            
+            try {
+                repository.insertTransaction(
+                    Transaction(
+                        id = id,
+                        periodId = periodId,
+                        type = type,
+                        category = category,
+                        amount = amount,
+                        description = description,
+                        memberId = memberId,
+                        memberName = memberName
+                    )
+                )
+            } catch (any: Exception) {}
+
+            val fs = firestore
+            if (fs != null) {
+                fs.collection("transactions").document(id.toString()).set(newTxMap)
             }
         }
     }

@@ -311,11 +311,7 @@ fun FinanceApp(viewModel: FinanceViewModel) {
                         transactions = transactions,
                         onAddTransaction = {
                             if (isAdminMode) {
-                                if (selectedPeriodId != null) {
-                                    showAddTransactionDialog = true
-                                } else {
-                                    Toast.makeText(context, t("no_active_period"), Toast.LENGTH_LONG).show()
-                                }
+                                showAddTransactionDialog = true
                             } else {
                                 Toast.makeText(context, t("admin_mode_locked"), Toast.LENGTH_LONG).show()
                             }
@@ -340,8 +336,7 @@ fun FinanceApp(viewModel: FinanceViewModel) {
                         onDeletePeriodTrigger = { viewModel.deletePeriod(it) },
                         onAddTransactionTrigger = {
                             if (isAdminMode) {
-                                if (selectedPeriodId != null) showAddTransactionDialog = true
-                                else Toast.makeText(context, t("no_active_period"), Toast.LENGTH_LONG).show()
+                                showAddTransactionDialog = true
                             } else {
                                 Toast.makeText(context, t("admin_mode_locked"), Toast.LENGTH_LONG).show()
                             }
@@ -519,6 +514,13 @@ fun FinanceApp(viewModel: FinanceViewModel) {
         var selectedMember by remember { mutableStateOf<Member?>(null) }
         var expandedMemberDropdown by remember { mutableStateOf(false) }
 
+        val initialPeriod = remember(selectedPeriodId, periods) {
+            periods.find { it.id == selectedPeriodId }
+                ?: periods.find { it.isActive }
+                ?: periods.firstOrNull()
+        }
+        var targetPeriod by remember(initialPeriod) { mutableStateOf(initialPeriod) }
+
         AlertDialog(
             onDismissRequest = { showAddTransactionDialog = false },
             title = { Text(t("add_item")) },
@@ -585,7 +587,7 @@ fun FinanceApp(viewModel: FinanceViewModel) {
                             label = { Text(t("description")) },
                             modifier = Modifier.fillMaxWidth()
                         )
-                        Spacer(modifier = Modifier.height(10.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
 
                         // Member link selection (mostly for Income/Contributions)
                         if (trType == "INCOME" && members.isNotEmpty()) {
@@ -653,6 +655,111 @@ fun FinanceApp(viewModel: FinanceViewModel) {
                                     }
                                 }
                             }
+                            Spacer(modifier = Modifier.height(12.dp))
+                        }
+
+                        // Period / Grid of Months Selection
+                        val displayHeading = if (trType == "INCOME" && selectedMember != null) {
+                            if (currentLanguage == "en") "Select Contribution Month (Green = Paid)" else "Pilih Bulan Iuran (Hijau = Lunas)"
+                        } else {
+                            if (currentLanguage == "en") "Select Transaction Period" else "Pilih Periode Transaksi"
+                        }
+                        
+                        Text(
+                            text = displayHeading, 
+                            fontSize = 12.sp, 
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        if (periods.isEmpty()) {
+                            Text(
+                                text = if (currentLanguage == "en") "No periods available" else "Tidak ada periode tersedia", 
+                                fontSize = 11.sp, 
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                            )
+                        } else {
+                            val gridColumns = 2
+                            val chunkedPeriods = periods.chunked(gridColumns)
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                chunkedPeriods.forEach { rowPeriods ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        rowPeriods.forEach { p ->
+                                            val isPaid = trType == "INCOME" && selectedMember != null && viewModel.isMemberPaidForPeriod(selectedMember?.id, p.id)
+                                            val isSelected = targetPeriod?.id == p.id
+                                            
+                                            Button(
+                                                onClick = {
+                                                    targetPeriod = p
+                                                },
+                                                enabled = !isPaid,
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondaryContainer,
+                                                    contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSecondaryContainer,
+                                                    disabledContainerColor = Color(0xFF2E7D32),
+                                                    disabledContentColor = Color.White
+                                                ),
+                                                modifier = Modifier.weight(1f).height(40.dp),
+                                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
+                                            ) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.Center
+                                                ) {
+                                                    if (isPaid) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.CheckCircle,
+                                                            contentDescription = "Paid",
+                                                            modifier = Modifier.size(14.dp),
+                                                            tint = Color.White
+                                                        )
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                    }
+                                                    Text(
+                                                        text = p.name.split(" ").firstOrNull() ?: p.name,
+                                                        fontSize = 10.sp,
+                                                        fontWeight = if (isSelected || isPaid) FontWeight.Bold else FontWeight.Normal,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        if (rowPeriods.size < gridColumns) {
+                                            for (i in 0 until (gridColumns - rowPeriods.size)) {
+                                                Spacer(modifier = Modifier.weight(1f))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Visual indicator of current selection
+                            targetPeriod?.let { p ->
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.Center
+                                    ) {
+                                        Text(
+                                            text = if (currentLanguage == "en") "Target Period: ${p.name}" else "Sasaran Periode: ${p.name}",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -661,19 +768,22 @@ fun FinanceApp(viewModel: FinanceViewModel) {
                 Button(
                     onClick = {
                         val dAmt = trAmt.toDoubleOrNull() ?: 0.0
-                        if (dAmt > 0.0 && trDesc.isNotBlank()) {
+                        val pId = targetPeriod?.id
+                        if (dAmt > 0.0 && trDesc.isNotBlank() && pId != null) {
                             viewModel.addTransaction(
                                 type = trType,
                                 category = trCat,
                                 amount = dAmt,
                                 description = trDesc,
                                 memberId = selectedMember?.id,
-                                memberName = selectedMember?.name
+                                memberName = selectedMember?.name,
+                                periodId = pId
                             )
                             showAddTransactionDialog = false
                         }
                     },
-                    modifier = Modifier.testTag("transaction_add_confirm")
+                    modifier = Modifier.testTag("transaction_add_confirm"),
+                    enabled = targetPeriod != null
                 ) {
                     Text(t("add"))
                 }
@@ -2024,76 +2134,106 @@ fun SettingsTab(
             var currentPassInput by remember { mutableStateOf("") }
             var newPassInput by remember { mutableStateOf("") }
             var isSavingPass by remember { mutableStateOf(false) }
+            var isPasswordSectionExpanded by remember { mutableStateOf(false) }
+            val arrowRotation by animateFloatAsState(targetValue = if (isPasswordSectionExpanded) 180f else 0f)
 
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
                 modifier = Modifier.fillMaxWidth().testTag("change_password_card")
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = if (currentLanguage == "en") "Change Admin Password" else "Ubah Sandi Admin",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = if (currentLanguage == "en") "Update password in local app and cloud database." else "Ubah kata sandi admin untuk login di seluruh perangkat secara real-time.",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    
-                    OutlinedTextField(
-                        value = currentPassInput,
-                        onValueChange = { currentPassInput = it },
-                        label = { Text(if (currentLanguage == "en") "Current Password" else "Sandi Saat Ini") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                        modifier = Modifier.fillMaxWidth().testTag("current_password_field")
-                    )
-                    
-                    Spacer(modifier = Modifier.height(8.dp))
-                    
-                    OutlinedTextField(
-                        value = newPassInput,
-                        onValueChange = { newPassInput = it },
-                        label = { Text(if (currentLanguage == "en") "New Password" else "Sandi Baru") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                        modifier = Modifier.fillMaxWidth().testTag("new_password_field")
-                    )
-                    
-                    Spacer(modifier = Modifier.height(12.dp))
-                    
-                    Button(
-                        onClick = {
-                            if (currentPassInput.isEmpty() || newPassInput.isEmpty()) {
-                                Toast.makeText(context, if (currentLanguage == "en") "All fields must be filled!" else "Semua kolom harus diisi!", Toast.LENGTH_SHORT).show()
-                                return@Button
-                            }
-                            isSavingPass = true
-                            viewModel.changeAdminPassword(
-                                currentPass = currentPassInput,
-                                newPass = newPassInput,
-                                onSuccess = {
-                                    isSavingPass = false
-                                    currentPassInput = ""
-                                    newPassInput = ""
-                                    Toast.makeText(context, if (currentLanguage == "en") "Password updated successfully!" else "Sandi admin berhasil diubah!", Toast.LENGTH_SHORT).show()
-                                },
-                                onFailure = { errorMsg ->
-                                    isSavingPass = false
-                                    Toast.makeText(context, errorMsg, Toast.LENGTH_LONG).show()
-                                }
-                            )
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                        modifier = Modifier.fillMaxWidth().testTag("save_password_button"),
-                        enabled = !isSavingPass
+                Column {
+                    // Clickable Header for expanding/collapsing
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { isPasswordSectionExpanded = !isPasswordSectionExpanded }
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text(if (currentLanguage == "en") "Update Password" else "Ubah Kata Sandi")
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (currentLanguage == "en") "Change Admin Password" else "Ubah Sandi Admin",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = if (currentLanguage == "en") "Update password in local app and cloud database." else "Ubah kata sandi admin untuk login di seluruh perangkat secara real-time.",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                            )
+                        }
+                        
+                        Icon(
+                            imageVector = Icons.Default.ArrowDropDown,
+                            contentDescription = if (isPasswordSectionExpanded) "Collapse" else "Expand",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .size(24.dp)
+                                .graphicsLayer(rotationZ = arrowRotation)
+                        )
+                    }
+
+                    AnimatedVisibility(visible = isPasswordSectionExpanded) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = currentPassInput,
+                                onValueChange = { currentPassInput = it },
+                                label = { Text(if (currentLanguage == "en") "Current Password" else "Sandi Saat Ini") },
+                                visualTransformation = PasswordVisualTransformation(),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                                modifier = Modifier.fillMaxWidth().testTag("current_password_field")
+                            )
+                            
+                            Spacer(modifier = Modifier.height(8.dp))
+                            
+                            OutlinedTextField(
+                                value = newPassInput,
+                                onValueChange = { newPassInput = it },
+                                label = { Text(if (currentLanguage == "en") "New Password" else "Sandi Baru") },
+                                visualTransformation = PasswordVisualTransformation(),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                                modifier = Modifier.fillMaxWidth().testTag("new_password_field")
+                            )
+                            
+                            Spacer(modifier = Modifier.height(12.dp))
+                            
+                            Button(
+                                onClick = {
+                                    if (currentPassInput.isEmpty() || newPassInput.isEmpty()) {
+                                        Toast.makeText(context, if (currentLanguage == "en") "All fields must be filled!" else "Semua kolom harus diisi!", Toast.LENGTH_SHORT).show()
+                                        return@Button
+                                    }
+                                    isSavingPass = true
+                                    viewModel.changeAdminPassword(
+                                        currentPass = currentPassInput,
+                                        newPass = newPassInput,
+                                        onSuccess = {
+                                            isSavingPass = false
+                                            currentPassInput = ""
+                                            newPassInput = ""
+                                            Toast.makeText(context, if (currentLanguage == "en") "Password updated successfully!" else "Sandi admin berhasil diubah!", Toast.LENGTH_SHORT).show()
+                                        },
+                                        onFailure = { errorMsg ->
+                                            isSavingPass = false
+                                            Toast.makeText(context, errorMsg, Toast.LENGTH_LONG).show()
+                                        }
+                                    )
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                modifier = Modifier.fillMaxWidth().testTag("save_password_button"),
+                                enabled = !isSavingPass
+                            ) {
+                                Text(if (currentLanguage == "en") "Update Password" else "Ubah Kata Sandi")
+                            }
+                        }
                     }
                 }
             }

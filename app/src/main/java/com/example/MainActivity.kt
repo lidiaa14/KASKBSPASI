@@ -30,6 +30,44 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         
+        // Initialize Notification Channels
+        com.example.util.NotificationHelper.createNotificationChannel(applicationContext)
+
+        // Request Android 13+ runtime POST_NOTIFICATIONS permission
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            val requestPermissionLauncher = registerForActivityResult(
+                androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+            ) { isGranted: Boolean ->
+                if (isGranted) {
+                    android.util.Log.d("MainActivity", "POST_NOTIFICATIONS permission granted")
+                } else {
+                    android.util.Log.w("MainActivity", "POST_NOTIFICATIONS permission denied")
+                }
+            }
+            
+            if (androidx.core.content.ContextCompat.checkSelfPermission(
+                    this,
+                    android.Manifest.permission.POST_NOTIFICATIONS
+                ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                requestPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+
+        // Subscribe to FCM topic for group-wide real-time notification broadcast
+        try {
+            com.google.firebase.messaging.FirebaseMessaging.getInstance().subscribeToTopic("transactions")
+                .addOnCompleteListener { task ->
+                    if (task.isSuccessful) {
+                        android.util.Log.i("MainActivity", "Successfully subscribed to FCM topic: transactions")
+                    } else {
+                        android.util.Log.e("MainActivity", "Failed to subscribe to FCM topic: transactions", task.exception)
+                    }
+                }
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "FCM messaging platform is unavailable", e)
+        }
+        
         var initError: Throwable? = null
         var financeViewModel: FinanceViewModel? = null
         try {

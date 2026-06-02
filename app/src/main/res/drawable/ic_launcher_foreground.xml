@@ -1,8 +1,171 @@
 <?xml version="1.0" encoding="utf-8"?>
-<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item
-        android:width="66dp"
-        android:height="66dp"
-        android:drawable="@drawable/img_app_logo"
-        android:gravity="center" />
-</layer-list>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <group
+        android:scaleX="0.125"
+        android:scaleY="0.125"
+        android:translateX="22.0"
+        android:translateY="22.0">
+
+        <!-- Outer Deep Black Circle Profile -->
+        <path
+            android:fillColor="#121212"
+            android:pathData="M256,256m-240,0a240,240 0,1 1,480 0a240,240 0,1 1,-480 0" />
+
+        <!-- Outer Shiny Gold Circle Ring -->
+        <path
+            android:strokeColor="#FFD700"
+            android:strokeWidth="8"
+            android:strokeMiterLimit="10"
+            android:pathData="M256,256m-234,0a234,234 0,1 1,468 0a234,234 0,1 1,-468 0" />
+
+        <!-- Inner Slim Gold Guide Circle -->
+        <path
+            android:strokeColor="#FFD700"
+            android:strokeWidth="2"
+            android:strokeMiterLimit="10"
+            android:pathData="M256,256m-198,0a198,198 0,1 1,396 0a198,198 0,1 1,-396 0" />
+
+        <!-- Pure White Central Circle (Lower half of flag structure) -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M256,256m-190,0a190,190 0,1 1,380 0a190,190 0,1 1,-380 0" />
+
+        <!-- Vibrant Red Upper Semi-Circle (Upper half of the flag) -->
+        <path
+            android:fillColor="#D32F2F"
+            android:pathData="M66,256 a190,190 0,0 1,380 0 L66,256 Z" />
+
+        <!-- Centered Retro Biker Open-Face Helmet Core -->
+        <path
+            android:fillColor="#1A1A1A"
+            android:strokeColor="#FFD700"
+            android:strokeWidth="4"
+            android:strokeLineJoin="round"
+            android:pathData="M 160,250 A 96,96 0,0,1 352,250 L352,285 C352,295 340,300 330,300 L182,300 C172,300 160,295 160,285 Z" />
+
+        <!-- Left Goggles Lens -->
+        <path
+            android:fillColor="#111111"
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="4"
+            android:pathData="M224,242m-22,0a22,22 0,1 1,44 0a22,22 0,1 1,-44 0" />
+
+        <!-- Right Goggles Lens -->
+        <path
+            android:fillColor="#111111"
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="4"
+            android:pathData="M288,242m-22,0a22,22 0,1 1,44 0a22,22 0,1 1,-44 0" />
+
+        <!-- Goggles Lens Inner Reflection Highlight (Left) -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M210,230 A8,8 0,0,1 216,238 A2,2 0,0,1 212,240 A8,8 0,0,0 206,232 A2,2 0,0,1 210,230 Z" />
+
+        <!-- Goggles Lens Inner Reflection Highlight (Right) -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M274,230 A8,8 0,0,1 280,238 A2,2 0,0,1 276,240 A8,8 0,0,0 270,232 A2,2 0,0,1 274,230 Z" />
+
+        <!-- Goggles Strap Connector (Left) -->
+        <path
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="5"
+            android:strokeLineCap="round"
+            android:pathData="M164,242 L202,242" />
+
+        <!-- Goggles Strap Bridge (Middle) -->
+        <path
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:pathData="M246,242 L266,242" />
+
+        <!-- Goggles Strap Connector (Right) -->
+        <path
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="5"
+            android:strokeLineCap="round"
+            android:pathData="M310,242 L348,242" />
+
+        <!-- Thumbs up Crest Icon at the top peak of the Helmet -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:strokeColor="#D32F2F"
+            android:strokeWidth="2"
+            android:pathData="M256,168m-14,0a14,14 0,1 1,28 0a14,14 0,1 1,-28 0" />
+        <path
+            android:fillColor="#D32F2F"
+            android:pathData="M251,173 L251,167 C251,164 253,161 256,161 C257,161 258,162 258,164 L258,168 L262,168 C265,168 266,170 266,172 L263,178 C262,180 260,180 258,180 L254,180 C252.5,180 251,176.5 251,173 Z" />
+
+        <!-- Classic Smoking Pipe (Bottom-Left) -->
+        <!-- Curly Stem Path -->
+        <path
+            android:strokeColor="#4E342E"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:fillColor="#00000000"
+            android:pathData="M165,340 C175,375 210,375 220,344" />
+        <!-- Pipe Wooden Bowl -->
+        <path
+            android:fillColor="#5D4037"
+            android:strokeColor="#3E2723"
+            android:strokeWidth="2"
+            android:pathData="M212,344 L228,344 L224,324 L216,324 Z" />
+        <path
+            android:fillColor="#D7CCC8"
+            android:pathData="M216,324 L224,324 L224,326 L216,326 Z" />
+        <!-- Rising smoke plume -->
+        <path
+            android:strokeColor="#BDBDBD"
+            android:strokeWidth="2"
+            android:strokeLineCap="round"
+            android:fillColor="#00000000"
+            android:pathData="M220,318 C216,305 224,300 220,290" />
+
+        <!-- Steaming Coffee Cup (Bottom-Right) -->
+        <!-- Cup Body -->
+        <path
+            android:fillColor="#D7CCC8"
+            android:strokeColor="#5D4037"
+            android:strokeWidth="3"
+            android:pathData="M285,324 L315,324 C315,340 307,352 297,352 L293,352 C283,352 285,340 285,324 Z" />
+        <!-- Cup Handle -->
+        <path
+            android:strokeColor="#5D4037"
+            android:strokeWidth="3"
+            android:fillColor="#00000000"
+            android:pathData="M312,330 A 6,6 0 0 1 312,344" />
+        <!-- Warm Cafe Steam #1 -->
+        <path
+            android:strokeColor="#BDBDBD"
+            android:strokeWidth="2.5"
+            android:strokeLineCap="round"
+            android:fillColor="#00000000"
+            android:pathData="M293,316 C290,308 296,306 293,298" />
+        <!-- Warm Cafe Steam #2 -->
+        <path
+            android:strokeColor="#BDBDBD"
+            android:strokeWidth="2.5"
+            android:strokeLineCap="round"
+            android:fillColor="#00000000"
+            android:pathData="M301,316 C298,308 304,306 301,298" />
+
+        <!-- Left Elegant Gold Star -->
+        <path
+            android:fillColor="#FFD700"
+            android:pathData="M80,240 L84,250 L94,252 L86,258 L88,268 L80,262 L72,268 L74,258 L66,252 L76,250 Z" />
+
+        <!-- Right Elegant Gold Star -->
+        <path
+            android:fillColor="#FFD700"
+            android:pathData="M432,240 L436,250 L446,252 L438,258 L440,268 L432,262 L424,268 L426,258 L418,252 L428,250 Z" />
+
+    </group>
+
+</vector>
