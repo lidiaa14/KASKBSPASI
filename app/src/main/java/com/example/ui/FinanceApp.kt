@@ -46,6 +46,8 @@ import com.example.data.Period
 import com.example.data.Transaction
 import com.example.util.ReportExporter
 import com.example.util.Translations
+import com.example.ui.components.CategoryDonutChart
+import com.example.ui.components.IncomeExpenseBarChart
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.Spring
@@ -956,111 +958,21 @@ fun DashboardTab(
             }
         }
 
-        // Custom drawn interactive charts trend
+        // Custom drawn revamped charts
         item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                shape = RoundedCornerShape(16.dp),
+            CategoryDonutChart(
+                transactions = transactions,
+                language = language,
                 modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = if (language == "en") "Cash Flow Statistics" else "Tren Pemasukan & Pengeluaran",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
-                        )
-                        Icon(
-                            imageVector = Icons.Default.Star,
-                            contentDescription = "Trend graph icon",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier
-                                .padding(end = 12.dp)
-                                .size(18.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
+            )
+        }
 
-                    // Draw a beautiful interactive Canvas comparative trend chart
-                    val incoming = metrics.totalIncome.toFloat()
-                    val outgoing = metrics.totalExpenses.toFloat()
-                    val totalFlow = incoming + outgoing
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(140.dp)
-                            .padding(vertical = 8.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (totalFlow == 0f) {
-                            Text(t("no_data"), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
-                        } else {
-                            val inThemeColor = if (isSystemInDarkTheme()) Color(0xFF34D399) else Color(0xFF047857)
-                            val outThemeColor = if (isSystemInDarkTheme()) Color(0xFFFCA5A5) else Color(0xFFB91C1C)
-
-                            Canvas(modifier = Modifier.fillMaxSize()) {
-                                val canvasWidth = size.width
-                                val canvasHeight = size.height
-
-                                val ratioIn = incoming / totalFlow
-                                val ratioOut = outgoing / totalFlow
-
-                                val barHeightMax = (canvasHeight - 30f).coerceAtLeast(0f)
-                                val barWidth = 60.dp.toPx()
-
-                                val inBarHeight = (barHeightMax * ratioIn).coerceAtLeast(0f)
-                                val outBarHeight = (barHeightMax * ratioOut).coerceAtLeast(0f)
-
-                                // Draw Income Bar
-                                drawRect(
-                                    color = inThemeColor,
-                                    topLeft = Offset(x = (canvasWidth / 2) - barWidth - 20f, y = canvasHeight - inBarHeight - 20F),
-                                    size = Size(width = barWidth, height = inBarHeight)
-                                )
-
-                                // Draw Expense Bar
-                                drawRect(
-                                    color = outThemeColor,
-                                    topLeft = Offset(x = (canvasWidth / 2) + 20f, y = canvasHeight - outBarHeight - 20F),
-                                    size = Size(width = barWidth, height = outBarHeight)
-                                )
-                            }
-                        }
-                    }
-
-                    // Legends
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(12.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(if (isSystemInDarkTheme()) Color(0xFF34D399) else Color(0xFF047857))
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(text = if (language == "en") "Income" else "Pemasukan", fontSize = 11.sp)
-
-                        Spacer(modifier = Modifier.width(16.dp))
-
-                        Box(
-                            modifier = Modifier
-                                .size(12.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(if (isSystemInDarkTheme()) Color(0xFFFCA5A5) else Color(0xFFB91C1C))
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(text = if (language == "en") "Expenses" else "Pengeluaran", fontSize = 11.sp)
-                    }
-                }
-            }
+        item {
+            IncomeExpenseBarChart(
+                transactions = transactions,
+                language = language,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
 
         // WhatsApp Share report trigger
