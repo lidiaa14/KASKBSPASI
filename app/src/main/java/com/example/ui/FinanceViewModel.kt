@@ -45,12 +45,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         val context = getApplication<Application>().applicationContext
         try {
             val app = if (FirebaseApp.getApps(context).isEmpty()) {
-                val options = FirebaseOptions.Builder()
-                    .setProjectId("uangkas-ef7cf")
-                    .setApplicationId("1:1037396381254:android:3a6fe42cc78be098760447")
-                    .setApiKey("AIzaSyBLzzewLA-WuzkcWDv7R0Yqz0AMIUjqqJg")
-                    .build()
-                FirebaseApp.initializeApp(context, options)
+                FirebaseApp.initializeApp(context) ?: FirebaseApp.getInstance()
             } else {
                 FirebaseApp.getInstance()
             }
@@ -1341,6 +1336,60 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
 
             selectedPeriodId.value = null
         }
+    }
+
+    // --- Ask AI Feature State and Logic ---
+    val chatMessages = MutableStateFlow<List<com.example.service.ChatMessage>>(
+        listOf(
+            com.example.service.ChatMessage(
+                text = "Halo! Saya adalah asisten pintar Ask AI. Saya bisa menganalisis data kas, memantau siapa saja yang belum melunasi iuran, atau merangkum pengeluaran komunitas. Silakan ajukan pertanyaan Anda!",
+                isUser = false
+            )
+        )
+    )
+    val isAiThinking = MutableStateFlow(false)
+
+    fun sendQuestionToAi(question: String) {
+        if (question.isBlank()) return
+        
+        viewModelScope.launch {
+            val userMsg = com.example.service.ChatMessage(text = question, isUser = true)
+            chatMessages.value = chatMessages.value + userMsg
+            isAiThinking.value = true
+
+            try {
+                val contextData = com.example.service.GeminiContextBuilder.buildContext(
+                    periods = periods.value,
+                    members = members.value,
+                    transactions = allTransactionsList.value
+                )
+
+                val response = com.example.service.GeminiService.getAnswer(
+                    contextData = contextData,
+                    userQuestion = question
+                )
+
+                val aiMsg = com.example.service.ChatMessage(text = response, isUser = false)
+                chatMessages.value = chatMessages.value + aiMsg
+            } catch (e: Exception) {
+                android.util.Log.e("FinanceViewModel", "Error in Gemini chatbot interaction", e)
+                val errMsg = "Koneksi bermasalah atau data tidak dapat dibaca. Silakan coba lagi."
+                val aiMsg = com.example.service.ChatMessage(text = errMsg, isUser = false)
+                chatMessages.value = chatMessages.value + aiMsg
+            } finally {
+                isAiThinking.value = false
+            }
+        }
+    }
+
+    fun clearChatHistory() {
+        chatMessages.value = listOf(
+            com.example.service.ChatMessage(
+                text = "Halo! Saya adalah asisten pintar Ask AI. Saya bisa menganalisis data kas, memantau siapa saja yang belum melunasi iuran, atau merangkum pengeluaran komunitas. Silakan ajukan pertanyaan Anda!",
+                isUser = false
+            )
+        )
+        isAiThinking.value = false
     }
 
     @Suppress("UNCHECKED_CAST")

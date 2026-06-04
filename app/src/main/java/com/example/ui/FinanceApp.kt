@@ -48,6 +48,7 @@ import com.example.util.ReportExporter
 import com.example.util.Translations
 import com.example.ui.components.CategoryDonutChart
 import com.example.ui.components.IncomeExpenseBarChart
+import com.example.ui.components.FloatingAiAssistant
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.Spring
@@ -88,8 +89,9 @@ fun FinanceApp(viewModel: FinanceViewModel) {
     fun t(key: String): String = Translations.get(key, currentLanguage)
     fun formatIDR(amount: Double): String = ReportExporter.formatIDR(amount)
 
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
         topBar = {
             Row(
                 modifier = Modifier
@@ -362,6 +364,7 @@ fun FinanceApp(viewModel: FinanceViewModel) {
                         isAdminMode = isAdminMode,
                         onDeleteTransaction = { viewModel.deleteTransaction(it) }
                     )
+                    "AskAI" -> AskAiTab(viewModel = viewModel)
                     "Settings" -> SettingsTab(
                         viewModel = viewModel,
                         periods = periods,
@@ -374,6 +377,8 @@ fun FinanceApp(viewModel: FinanceViewModel) {
             }
             }
         }
+    }
+    FloatingAiAssistant(viewModel = viewModel)
     }
 
     // Dialogs initialization setups

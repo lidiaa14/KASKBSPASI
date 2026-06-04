@@ -1,0 +1,13 @@
+# Built outputs and gradle files
+.gradle
+/local.properties
+.build-outputs/
+app/build/
+build/
+
+# IDE files
+.idea/
+
+# Secrets and environment configurations
+.env
+/app/.env
