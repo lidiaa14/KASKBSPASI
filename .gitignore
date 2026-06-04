@@ -11,3 +11,5 @@ build/
 # Secrets and environment configurations
 .env
 /app/.env
+local.properties
+local.defaults.properties
