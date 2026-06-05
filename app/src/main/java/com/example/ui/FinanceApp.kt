@@ -103,13 +103,22 @@ fun FinanceApp(viewModel: FinanceViewModel) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // Community Logo Icon in the Header
-                Image(
-                    painter = painterResource(id = com.example.R.drawable.img_app_logo),
-                    contentDescription = "KB SPASI Logo",
+                Box(
                     modifier = Modifier
                         .size(42.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                )
+                        .clip(RoundedCornerShape(21.dp)) // Fully circular
+                        .background(Color.White), // White background so it's visible on dark theme as well
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = painterResource(id = com.example.R.drawable.img_app_logo),
+                        contentDescription = "KB SPASI Logo",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(21.dp)),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Fit // To prevent stretching
+                    )
+                }
                 Spacer(modifier = Modifier.width(10.dp))
 
                 // Left action: Header Title & Active Period
