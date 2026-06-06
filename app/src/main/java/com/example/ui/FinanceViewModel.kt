@@ -145,8 +145,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var reconnectJob: Job? = null
 
-    private val listenerStartTime = System.currentTimeMillis()
+    private var listenerStartTime = System.currentTimeMillis()
     private val locallyAddedTxIds = java.util.Collections.synchronizedSet(java.util.HashSet<Long>())
+    private val notifiedDocIds = java.util.Collections.synchronizedSet(java.util.HashSet<String>())
 
     val isDataLoading = combine(
         combine(isPeriodsLoading, isMembersLoading, isTransactionsLoading) { p, m, t -> p || m || t },
@@ -191,7 +192,25 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         return if (absHash <= 0L) 1L else absHash
     }
 
+    private fun markTxAsNotified(docId: String) {
+        notifiedDocIds.add(docId)
+        try {
+            val currentSaved = sharedPrefs.getStringSet("notified_transaction_doc_ids", emptySet()) ?: emptySet()
+            val newSaved = currentSaved.toMutableSet().apply { add(docId) }
+            sharedPrefs.edit().putStringSet("notified_transaction_doc_ids", newSaved).apply()
+        } catch (e: Exception) {
+            android.util.Log.e("FinanceViewModel", "Error saving notified transaction doc id to preferences", e)
+        }
+    }
+
     init {
+        try {
+            val savedNotified = sharedPrefs.getStringSet("notified_transaction_doc_ids", emptySet()) ?: emptySet()
+            notifiedDocIds.addAll(savedNotified)
+        } catch (e: Exception) {
+            android.util.Log.e("FinanceViewModel", "Error loading notified transaction doc IDs from preferences", e)
+        }
+
         // Autoload disabled - defaulting to "Semua Waktu" (All Time / null) on launch
         /*
         viewModelScope.launch {
@@ -307,6 +326,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
 
     fun setupRealtimeListeners() {
         clearRealtimeListeners()
+        listenerStartTime = System.currentTimeMillis()
         
         if (!_networkConnected.value) {
             connectionState.value = ConnectionState.OFFLINE
@@ -458,6 +478,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     isMembersLoading.value = false
                 }
 
+            var isTransactionsFirstCallback = true
             transactionsListener = fs.collection("transactions")
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
@@ -469,6 +490,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     }
                     if (snapshot != null) {
                         listenerErrorRetryCount = 0
+                        val wasFirstCallback = isTransactionsFirstCallback
+                        isTransactionsFirstCallback = false
                         
                         // Real-time broadcast notification trigger when other devices add data
                         for (dc in snapshot.documentChanges) {
@@ -479,8 +502,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                                     val id = safeLong(doc.get("id")) ?: docIdLong ?: stableStringHashToLong(doc.id)
                                     val date = safeLong(doc.get("date")) ?: 0L
                                     val isLocal = locallyAddedTxIds.contains(id)
+                                    val isAlreadyNotified = notifiedDocIds.contains(doc.id)
                                     
-                                    if (!isLocal && date > listenerStartTime - 5000) {
+                                    if (!wasFirstCallback && !isLocal && !isAlreadyNotified && date > listenerStartTime - 5000) {
                                         val type = doc.getString("type") ?: ""
                                         val amount = safeDouble(doc.get("amount"))
                                         val description = doc.getString("description") ?: ""
@@ -498,11 +522,20 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                                             "Pengeluaran: $description senilai Rp $formattedAmount"
                                         }
                                         
+                                        markTxAsNotified(doc.id)
+                                        
                                         com.example.util.NotificationHelper.showNotification(
                                             getApplication<Application>().applicationContext,
                                             title,
                                             body
                                         )
+                                    } else {
+                                        // Backfill / populate seen transaction doc IDs so they don't notify in the future
+                                        if (isAlreadyNotified || wasFirstCallback || isLocal) {
+                                            if (!isAlreadyNotified) {
+                                                markTxAsNotified(doc.id)
+                                            }
+                                        }
                                     }
                                 } catch (e: Exception) {
                                     android.util.Log.e("FinanceViewModel", "Broadcast notification trigger error", e)

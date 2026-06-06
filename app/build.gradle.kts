@@ -10,46 +10,28 @@ plugins {
     alias(libs.plugins.secrets)
 }
 
-// Automatically sync System Environment variables & local.properties into root .env file
-val envFile = rootProject.file(".env")
-if (!envFile.exists()) {
-    envFile.createNewFile()
-}
-
-val envProperties = Properties()
-if (envFile.length() > 0) {
-    envFile.inputStream().use { envProperties.load(it) }
-}
-
-var envModified = false
-
+// Automatically sync System Environment variables into root local.properties file
 val localPropsFile = rootProject.file("local.properties")
 val localProperties = Properties()
 if (localPropsFile.exists()) {
     localPropsFile.inputStream().use { localProperties.load(it) }
 }
 
-val keysToLoad = listOf("GEMINI_API_KEY", "GEMINI_API_KEY_FALLBACK_1")
-for (key in keysToLoad) {
-    val sysValue = System.getenv(key)
-    val localValue = localProperties.getProperty(key)
-    val currentValue = envProperties.getProperty(key)
+var localModified = false
+val keysToSync = listOf("GEMINI_API_KEY", "GEMINI_API_KEY_FALLBACK_1")
 
-    val bestValue = when {
-        !sysValue.isNullOrEmpty() -> sysValue
-        !localValue.isNullOrEmpty() -> localValue
-        else -> currentValue
-    }
-
-    if (!bestValue.isNullOrEmpty() && currentValue != bestValue) {
-        envProperties.setProperty(key, bestValue)
-        envModified = true
+for (key in keysToSync) {
+    val envValue = System.getenv(key)
+    val currentValue = localProperties.getProperty(key)
+    if (!envValue.isNullOrEmpty() && currentValue != envValue) {
+        localProperties.setProperty(key, envValue)
+        localModified = true
     }
 }
 
-if (envModified) {
-    envFile.outputStream().use {
-        envProperties.store(it, "Automatically generated/updated during Gradle build")
+if (localModified || !localPropsFile.exists()) {
+    localPropsFile.outputStream().use {
+        localProperties.store(it, "Automatically generated/updated during Gradle build")
     }
 }
 
@@ -101,8 +83,8 @@ android {
 }
 
 secrets {
-    propertiesFileName = ".env"
-    defaultPropertiesFileName = ".env.example"
+    propertiesFileName = "local.properties"
+    defaultPropertiesFileName = "local.defaults.properties"
 }
 
 dependencies {
