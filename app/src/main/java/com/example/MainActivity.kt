@@ -54,18 +54,36 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Subscribe to FCM topic for group-wide real-time notification broadcast
+        // Safely manage FCM: prevent background hard failures from TOO_MANY_REGISTRATIONS
         try {
-            com.google.firebase.messaging.FirebaseMessaging.getInstance().subscribeToTopic("transactions")
-                .addOnCompleteListener { task ->
-                    if (task.isSuccessful) {
-                        android.util.Log.i("MainActivity", "Successfully subscribed to FCM topic: transactions")
-                    } else {
-                        android.util.Log.e("MainActivity", "Failed to subscribe to FCM topic: transactions", task.exception)
-                    }
+            val fcm = com.google.firebase.messaging.FirebaseMessaging.getInstance()
+            fcm.isAutoInitEnabled = false
+
+            // Clear any lingering topic operation queues left over from previous failed attempts
+            try {
+                getSharedPreferences("com.google.android.gms.appid", android.content.Context.MODE_PRIVATE).edit().clear().apply()
+                getSharedPreferences("com.google.firebase.messaging", android.content.Context.MODE_PRIVATE).edit().clear().apply()
+            } catch (ignored: Exception) {}
+
+            // Gracefully check token before attempting topic synchronization
+            fcm.token.addOnCompleteListener { tokenTask ->
+                if (tokenTask.isSuccessful) {
+                    val token = tokenTask.result
+                    android.util.Log.i("MainActivity", "FCM token retrieved: $token")
+                    fcm.subscribeToTopic("transactions")
+                        .addOnCompleteListener { topicTask ->
+                            if (topicTask.isSuccessful) {
+                                android.util.Log.i("MainActivity", "Subscribed to FCM topic: transactions")
+                            } else {
+                                android.util.Log.w("MainActivity", "Topic subscription skipped: ${topicTask.exception?.message}")
+                            }
+                        }
+                } else {
+                    android.util.Log.w("MainActivity", "FCM registration limit or service unavailable (${tokenTask.exception?.message}); skipping topic sync.")
                 }
-        } catch (e: Exception) {
-            android.util.Log.e("MainActivity", "FCM messaging platform is unavailable", e)
+            }
+        } catch (e: Throwable) {
+            android.util.Log.w("MainActivity", "FirebaseMessaging is not supported or unavailable on this environment", e)
         }
         
         var initError: Throwable? = null

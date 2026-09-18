@@ -14,6 +14,11 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
         
+        <!-- Prevent automatic FCM registration/topic sync hard-failures on emulators with token limits -->
+        <meta-data
+            android:name="firebase_messaging_auto_init_enabled"
+            android:value="false" />
+
         <!-- FCM Message Service Receiver -->
         <service
             android:name=".service.MyFirebaseMessagingService"
