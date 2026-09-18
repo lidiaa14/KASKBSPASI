@@ -10,6 +10,49 @@ plugins {
     alias(libs.plugins.secrets)
 }
 
+// Ensure google-services.json exists so builds never fail if omitted from repository clone/checkout
+val googleServicesJsonFile = file("google-services.json")
+if (!googleServicesJsonFile.exists()) {
+    val envGoogleServices = System.getenv("GOOGLE_SERVICES_JSON")
+    if (!envGoogleServices.isNullOrBlank()) {
+        googleServicesJsonFile.writeText(envGoogleServices)
+    } else {
+        googleServicesJsonFile.writeText(
+            """
+            {
+              "project_info": {
+                "project_number": "1037396381254",
+                "project_id": "uangkas-ef7cf",
+                "storage_bucket": "uangkas-ef7cf.firebasestorage.app"
+              },
+              "client": [
+                {
+                  "client_info": {
+                    "mobilesdk_app_id": "1:1037396381254:android:3a6fe42cc78be098760447",
+                    "android_client_info": {
+                      "package_name": "com.uangkas.community"
+                    }
+                  },
+                  "oauth_client": [],
+                  "api_key": [
+                    {
+                      "current_key": "AIzaSyBLzzewLA-WuzkcWDv7R0Yqz0AMIUjqqJg"
+                    }
+                  ],
+                  "services": {
+                    "appinvite_service": {
+                      "other_platform_oauth_client": []
+                    }
+                  }
+                }
+              ],
+              "configuration_version": "1"
+            }
+            """.trimIndent()
+        )
+    }
+}
+
 // Automatically sync System Environment variables into root local.properties file
 val localPropsFile = rootProject.file("local.properties")
 val localProperties = Properties()

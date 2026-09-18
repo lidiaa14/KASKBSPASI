@@ -34,6 +34,46 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - name: Ensure google-services.json exists
+        run: |
+          if [ -n "${{ secrets.GOOGLE_SERVICES_JSON }}" ]; then
+            echo "Restoring google-services.json from GitHub secret..."
+            echo "${{ secrets.GOOGLE_SERVICES_JSON }}" > app/google-services.json
+          elif [ ! -f "app/google-services.json" ]; then
+            echo "Creating default app/google-services.json..."
+            cat << 'EOF' > app/google-services.json
+{
+  "project_info": {
+    "project_number": "1037396381254",
+    "project_id": "uangkas-ef7cf",
+    "storage_bucket": "uangkas-ef7cf.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1037396381254:android:3a6fe42cc78be098760447",
+        "android_client_info": {
+          "package_name": "com.uangkas.community"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBLzzewLA-WuzkcWDv7R0Yqz0AMIUjqqJg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
+EOF
+          fi
+
       - name: Build with Gradle
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
